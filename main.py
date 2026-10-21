@@ -35,8 +35,12 @@ def _hard_exit(code: int) -> None:
     still unloads the Qt DLLs) can crash with an access violation after the
     self-test has already passed, turning a pass into a failure.
     """
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:   # None in the windowed (no console) exe
+                stream.flush()
+        except Exception:
+            pass
     if sys.platform.startswith("win"):
         import ctypes
         k32 = ctypes.windll.kernel32
