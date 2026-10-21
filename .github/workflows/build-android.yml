@@ -7,6 +7,7 @@ on:
   push:
     branches-ignore:
       - ci-logs
+      - ci-test
     paths:
       - "android/**"
       - ".github/workflows/build-android.yml"

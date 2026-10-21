@@ -109,7 +109,9 @@ fun NumberField(
         label = { Text(label, maxLines = 1) },
         singleLine = true,
         enabled = enabled,
-        suffix = suffix?.let { { Text(it) } },
+        suffix = if (suffix != null) {
+            { Text(suffix) }
+        } else null,
         keyboardOptions = KeyboardOptions(
             keyboardType = if (decimals > 0) KeyboardType.Decimal else KeyboardType.Number,
             imeAction = ImeAction.Done,

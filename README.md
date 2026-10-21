@@ -2,6 +2,11 @@
 
 A desktop app for resizing, cropping and converting images without losing quality, and for sending them on WhatsApp.
 
+> **Android version:** the `android/` folder holds a native Android app with the same tools
+> (resize presets, print sizes, crop, Enhanced upscaling, proof sheets, batch, WhatsApp sharing).
+> GitHub builds the APK automatically – download it from the repository's **Releases** page.
+> See [android/README.md](android/README.md).
+
 ## Features
 
 | Area | What it does |

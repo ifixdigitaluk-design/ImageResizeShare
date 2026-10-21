@@ -4,8 +4,8 @@ import android.graphics.Bitmap
 
 /** Limits that keep phones from running out of memory. */
 const val MAX_OUTPUT_SIDE = 16000
-const val MAX_OUTPUT_PIXELS = 64_000_000L
-const val MAX_SOURCE_PIXELS = 50_000_000L
+const val MAX_OUTPUT_PIXELS = 25_000_000L
+const val MAX_SOURCE_PIXELS = 24_000_000L
 
 enum class FitMode(val label: String) {
     FIT_PAD("Fit – keep whole image, add background"),

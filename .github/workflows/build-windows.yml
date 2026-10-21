@@ -6,9 +6,11 @@ on:
   push:
     branches-ignore:
       - ci-logs
+      - ci-test
     paths-ignore:
       - "android/**"
       - ".github/workflows/build-android.yml"
+      - ".github/workflows/android-tests.yml"
   workflow_dispatch:
 
 jobs:
@@ -42,12 +44,12 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONIOENCODING = "utf-8"
-          python main.py --selftest *> selftest.log
+          python -X faulthandler main.py --selftest *> selftest.log
           $code = $LASTEXITCODE
           Get-Content selftest.log
           if ($code -ne 0) {
             $msg = (Get-Content selftest.log -Raw) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
-            Write-Output "::error title=Self-test failed::$msg"
+            Write-Output "::error title=Self-test failed (exit code $code)::$msg"
             exit $code
           }
 

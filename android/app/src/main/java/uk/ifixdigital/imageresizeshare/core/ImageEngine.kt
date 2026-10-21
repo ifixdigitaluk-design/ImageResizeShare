@@ -540,7 +540,7 @@ object PdfWriter {
         val xref = out.size()
         ascii("xref\n0 6\n0000000000 65535 f \n")
         for (i in 1..5) ascii(String.format(Locale.US, "%010d 00000 n \n", offsets[i]))
-        ascii("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n")
+        ascii("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n$xref\n%EOF\n")
         return out.toByteArray()
     }
 }
