@@ -28,6 +28,24 @@ def _windows_setup() -> None:
             pass
 
 
+def _hard_exit(code: int) -> None:
+    """Exit immediately, skipping Python/Qt teardown.
+
+    On headless Windows runners the normal teardown (even os._exit, which
+    still unloads the Qt DLLs) can crash with an access violation after the
+    self-test has already passed, turning a pass into a failure.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform.startswith("win"):
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        k32.TerminateProcess(k32.GetCurrentProcess(), code)
+    os._exit(code)
+
+
 def run_selftest(app, MainWindow) -> int:
     import tempfile
 
@@ -197,11 +215,7 @@ def main() -> int:
         for k, v in saved.items():
             store.setValue(k, v)
         store.sync()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        # Skip Python/Qt teardown: on headless Windows runners it can crash
-        # (access violation) after the test has already passed.
-        os._exit(code)
+        _hard_exit(code)
 
     w = MainWindow()
     w.show()
