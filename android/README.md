@@ -47,6 +47,16 @@ cd android
 
 The APK appears in `app/build/outputs/apk/release/`.
 
+## Tests
+
+`app/src/sharedTest` holds engine tests (ported from `tests/test_imaging.py`) and a
+UI walk-through that screenshots every screen. They run two ways:
+
+* **On GitHub, no phone needed:** Actions → **Android tests** → Run workflow. They run on
+  the JVM with Robolectric (real Android graphics). Screenshots and results are pushed to the
+  `ci-logs` branch (`android-tests/`).
+* **On a phone or emulator:** `./gradlew connectedDebugAndroidTest`.
+
 ## Signing (so updates install over the old version)
 
 Android only installs an update if it is signed with the same key. Until a key is
