@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Image Resize &amp; Share</string>
+    <string name="share_target_label">Resize &amp; Share</string>
+    <string name="batch_target_label">Batch resize</string>
+    <string name="edit_target_label">Edit with Image Resize &amp; Share</string>
+</resources>

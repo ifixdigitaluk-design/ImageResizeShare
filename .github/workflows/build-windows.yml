@@ -4,6 +4,11 @@ name: Build Windows app
 
 on:
   push:
+    branches-ignore:
+      - ci-logs
+    paths-ignore:
+      - "android/**"
+      - ".github/workflows/build-android.yml"
   workflow_dispatch:
 
 jobs:
@@ -34,7 +39,17 @@ jobs:
         run: python -m pytest -q tests
 
       - name: App self-test (from source)
-        run: python main.py --selftest
+        shell: pwsh
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          python main.py --selftest *> selftest.log
+          $code = $LASTEXITCODE
+          Get-Content selftest.log
+          if ($code -ne 0) {
+            $msg = (Get-Content selftest.log -Raw) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+            Write-Output "::error title=Self-test failed::$msg"
+            exit $code
+          }
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm ImageResizeShare.spec
