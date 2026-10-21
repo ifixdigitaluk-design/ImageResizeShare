@@ -1,0 +1,62 @@
+# Builds the Windows app + installer on GitHub (free) every push.
+# Download the result from the run's "Artifacts" section.
+name: Build Windows app
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Download AI engine (Real-ESRGAN)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vendor | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip" -OutFile vendor/realesrgan.zip
+          Expand-Archive vendor/realesrgan.zip -DestinationPath vendor/realesrgan -Force
+          Remove-Item vendor/realesrgan.zip
+          Get-ChildItem vendor/realesrgan -Include *.jpg,*.png,*.mp4 -Recurse | Remove-Item
+
+      - name: Unit tests
+        run: python -m pytest -q tests
+
+      - name: App self-test (from source)
+        run: python main.py --selftest
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm ImageResizeShare.spec
+
+      - name: Self-test the built exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/ImageResizeShare/ImageResizeShare.exe -ArgumentList "--selftest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Built app self-test failed ($($p.ExitCode))" }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ImageResizeShare-Setup
+          path: dist/ImageResizeShare-Setup-*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ImageResizeShare-portable
+          path: dist/ImageResizeShare/
