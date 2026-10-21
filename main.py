@@ -13,6 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Qt objects created by the self-test are kept alive until the process exits:
+# destroying the main window while a background job is still finishing can
+# crash on Windows.
+_KEEP_ALIVE: list = []
+
 
 def _windows_setup() -> None:
     if sys.platform.startswith("win"):
@@ -43,6 +48,7 @@ def run_selftest(app, MainWindow) -> int:
     img.save(tmp / "test2.png")
 
     w = MainWindow()
+    _KEEP_ALIVE.append(w)
     w.show()
 
     def wait(label):
