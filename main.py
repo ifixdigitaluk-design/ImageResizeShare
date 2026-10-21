@@ -174,12 +174,28 @@ def main() -> int:
     app.setWindowIcon(app_icon())
 
     if selftest:
+        from PySide6.QtCore import QSettings
+        # Run with default settings (saved settings such as unit = mm would
+        # change the results), then put the user's settings back.
+        store = QSettings("ImageResizeShare", "ImageResizeShare")
+        saved = {k: store.value(k) for k in store.allKeys()}
+        store.clear()
+        store.sync()
         try:
-            return run_selftest(app, MainWindow)
+            code = run_selftest(app, MainWindow)
         except Exception:
             traceback.print_exc()
             print("SELFTEST FAILED")
-            return 1
+            code = 1
+        store.clear()
+        for k, v in saved.items():
+            store.setValue(k, v)
+        store.sync()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Skip Python/Qt teardown: on headless Windows runners it can crash
+        # (access violation) after the test has already passed.
+        os._exit(code)
 
     w = MainWindow()
     w.show()
