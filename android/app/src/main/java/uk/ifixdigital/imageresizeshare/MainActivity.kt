@@ -151,7 +151,8 @@ fun AppRoot(vm: MainViewModel, actions: UiActions) {
     LaunchedEffect(Unit) {
         vm.events.collect { msg ->
             snackbar.currentSnackbarData?.dismiss()
-            launch { snackbar.showSnackbar(msg, duration = SnackbarDuration.Long) }
+            val long = msg.startsWith("Saved") || msg.startsWith("Tip") || msg.startsWith("Could not")
+            launch { snackbar.showSnackbar(msg, duration = if (long) SnackbarDuration.Long else SnackbarDuration.Short) }
         }
     }
     LaunchedEffect(Unit) {
