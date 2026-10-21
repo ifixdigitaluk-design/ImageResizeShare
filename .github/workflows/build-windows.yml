@@ -1,5 +1,6 @@
 # Builds the Windows app + installer on GitHub (free) every push.
-# Download the result from the run's "Artifacts" section.
+# The installer and a portable zip are attached to a GitHub Release
+# ("Releases" on the repo page) and to the run's "Artifacts" section.
 name: Build Windows app
 
 on:
@@ -12,6 +13,9 @@ on:
       - ".github/workflows/build-android.yml"
       - ".github/workflows/android-tests.yml"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -79,3 +83,17 @@ jobs:
         with:
           name: ImageResizeShare-portable
           path: dist/ImageResizeShare/
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = Get-ChildItem dist/ImageResizeShare-Setup-*.exe | Select-Object -First 1
+          Compress-Archive -Path dist/ImageResizeShare -DestinationPath dist/ImageResizeShare-portable.zip -Force
+          $tag = "windows-v1.0.${{ github.run_number }}"
+          gh release create $tag $setup.FullName dist/ImageResizeShare-portable.zip `
+            --target $env:GITHUB_SHA `
+            --title "Windows app 1.0.${{ github.run_number }}" `
+            --notes "Image Resize & Share for Windows. ImageResizeShare-Setup-*.exe installs the app with Start-menu and desktop shortcuts and the right-click 'Edit with' menu. ImageResizeShare-portable.zip runs without installing: unzip and open ImageResizeShare.exe."
