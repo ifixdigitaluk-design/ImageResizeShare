@@ -1,8 +1,9 @@
-# Runs the Android engine tests and a UI walk-through on an emulator.
-# Start it from Actions -> "Android tests (emulator)" -> Run workflow.
-# Screenshots of every screen and the test report are pushed to the
-# "ci-logs" branch (android-tests/ folder).
-name: Android tests (emulator)
+# Runs the Android tests on GitHub: engine tests (ported from
+# tests/test_imaging.py) and a UI walk-through that screenshots every screen.
+# They run on the JVM with Robolectric (real Android graphics), so no emulator
+# is needed. Start from Actions -> "Android tests" -> Run workflow.
+# Screenshots and the test report are pushed to the "ci-logs" branch.
+name: Android tests
 
 on:
   push:
@@ -15,8 +16,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -27,34 +28,11 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm || true
-          echo "CPU virtualisation flags: $(grep -cE 'vmx|svm' /proc/cpuinfo)"
-
-      - name: Build app and test APKs
+      - name: Run tests
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest 2>&1 | tee build.log
-
-      - name: Run tests on emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          arch: x86_64
-          target: default
-          disable-animations: true
-          emulator-boot-timeout: 900
-          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          working-directory: android
-          script: |
-            ./gradlew --no-daemon connectedDebugAndroidTest -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true > test.log 2>&1 || echo "TESTS_FAILED" >> test.log
-            adb exec-out run-as uk.ifixdigital.imageresizeshare.debug tar c files/screens > screens.tar || true
-            adb logcat -d -v time > logcat.txt || true
+          ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee test.log || echo "TESTS_FAILED" >> test.log
 
       - name: Publish results to the ci-logs branch
         if: always()
@@ -64,10 +42,9 @@ jobs:
           OUT="$RUNNER_TEMP/out/android-tests"
           mkdir -p "$OUT"
           cd android
-          cp build.log test.log "$OUT/" 2>/dev/null || true
-          if [ -s screens.tar ]; then mkdir -p "$OUT/screens" && tar xf screens.tar -C "$OUT/screens" --strip-components=2 || true; fi
-          [ -f logcat.txt ] && grep -E "AndroidRuntime|FATAL|uk.ifixdigital|TestRunner" logcat.txt | tail -n 3000 > "$OUT/logcat-app.txt" || true
-          cp -r app/build/outputs/androidTest-results "$OUT/results" 2>/dev/null || true
+          cp test.log "$OUT/" 2>/dev/null || true
+          cp -r app/build/screens "$OUT/screens" 2>/dev/null || true
+          cp -r app/build/test-results/testDebugUnitTest "$OUT/results" 2>/dev/null || true
           cd "$RUNNER_TEMP/out"
           git init -q && git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Android test results [skip ci]"
           git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci-logs

@@ -290,6 +290,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var processJob: Job? = null
 
+    /** Wait after the last change before re-rendering (tests set this to 0). */
+    var debounceMs = 220L
+
     private fun scheduleProcess(p: Params?) {
         processJob?.cancel()
         if (p == null) {
@@ -302,7 +305,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         processing = true
         processJob = viewModelScope.launch {
-            delay(220)
+            if (debounceMs > 0) delay(debounceMs)
             try {
                 val c = withContext(Dispatchers.Default) { engineLock.withLock { compute(p) } }
                 applyResult(c)
@@ -970,7 +973,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (ps == null || img == null || ps.widthIn <= 0 || ps.heightIn <= 0) return
         proofBusy = true
         proofJob = viewModelScope.launch {
-            delay(200)
+            if (debounceMs > 0) delay(debounceMs)
             try {
                 val r = withContext(Dispatchers.Default) { engineLock.withLock { Proof.render(ctx, img, ps) } }
                 proofRender = r

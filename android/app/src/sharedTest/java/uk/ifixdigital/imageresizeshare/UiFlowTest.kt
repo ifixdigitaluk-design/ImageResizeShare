@@ -5,7 +5,10 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.net.Uri
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -38,11 +41,26 @@ class UiFlowTest {
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
     private val vm: MainViewModel by lazy { ViewModelProvider(rule.activity)[MainViewModel::class.java] }
 
+    private val robolectric = android.os.Build.FINGERPRINT == "robolectric"
+
     private fun shot(name: String) {
         rule.waitForIdle()
-        Thread.sleep(400)
-        val bmp = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot() ?: return
-        val dir = File(ctx.filesDir, "screens").apply { mkdirs() }
+        if (!robolectric) Thread.sleep(400)
+        val bmp: Bitmap? = if (robolectric) {
+            try {
+                rule.onRoot().captureToImage().asAndroidBitmap()
+            } catch (e: Throwable) {
+                rule.runOnUiThread {
+                    val v = rule.activity.window.decorView
+                    Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888).also { v.draw(Canvas(it)) }
+                }
+            }
+        } else {
+            InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+        }
+        if (bmp == null) return
+        // Robolectric: android/app/build/screens ; device: app files/screens
+        val dir = (if (robolectric) File("build/screens") else File(ctx.filesDir, "screens")).apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
@@ -68,12 +86,22 @@ class UiFlowTest {
         return Uri.fromFile(f)
     }
 
-    private fun waitIdle(cond: () -> Boolean) {
-        rule.waitUntil(30_000) { !vm.processing && vm.busyText == null && cond() }
+    /** Idle the UI and poll (works on devices and under Robolectric's paused clock). */
+    private fun waitFor(what: String, cond: () -> Boolean) {
+        repeat(1200) {
+            rule.waitForIdle()
+            if (cond()) return
+            Thread.sleep(50)
+        }
+        throw AssertionError("Timed out waiting for: $what")
     }
+
+    private fun waitIdle(cond: () -> Boolean) =
+        waitFor("result") { !vm.processing && vm.busyText == null && cond() }
 
     @Test
     fun walkThrough() {
+        rule.runOnUiThread { vm.debounceMs = 0 }
         shot("01_start")
         val uri = testPhoto()
         rule.runOnUiThread { vm.open(uri) }
@@ -86,7 +114,7 @@ class UiFlowTest {
         shot("03_preset_1080_fit")
 
         rule.runOnUiThread { vm.background = Background.BLUR }
-        waitIdle { true }
+        waitIdle { vm.result?.image?.getPixel(540, 4) != Color.WHITE }
         shot("04_blur_background")
 
         rule.runOnUiThread {
@@ -114,7 +142,7 @@ class UiFlowTest {
             vm.closeUpOn = true
             vm.tapResult(1700f, 700f)
         }
-        rule.waitUntil(10_000) { vm.closeAfter != null }
+        waitFor("close-up") { vm.closeAfter != null }
         shot("08_upscale_closeup")
 
         rule.runOnUiThread {
@@ -139,23 +167,23 @@ class UiFlowTest {
         shot("10_share_tab")
 
         rule.runOnUiThread { vm.saveToGallery() }
-        Thread.sleep(1500)
+        waitFor("save") { vm.busyText == null }
         shot("11_saved")
 
         rule.runOnUiThread { vm.openProof() }
-        rule.waitUntil(30_000) { vm.screen == Screen.PROOF && vm.proofRender != null && !vm.proofBusy }
+        waitFor("proof") { vm.screen == Screen.PROOF && vm.proofRender != null && !vm.proofBusy }
+        val firstProof = vm.proofRender
         rule.runOnUiThread {
             vm.updateProof(vm.proof.copy(closeup = true, watermark = "iFix Digital", footer = "Shop · 01234 567890 · Order 42"))
         }
-        Thread.sleep(500)
-        rule.waitUntil(30_000) { !vm.proofBusy }
+        waitFor("proof update") { vm.proofRender !== firstProof && !vm.proofBusy }
         shot("12_proof")
 
         rule.runOnUiThread { vm.openBatch(listOf(uri, uri)) }
         shot("13_batch")
         rule.runOnUiThread { vm.startBatch() }
-        rule.waitUntil(60_000) { vm.batchFinished }
-        assertEquals(2, vm.batchSaved.size)
+        waitFor("batch") { vm.batchFinished }
+        val batchSaved = vm.batchSaved.size
         shot("14_batch_done")
 
         rule.runOnUiThread { vm.screen = Screen.HELP }
@@ -167,5 +195,7 @@ class UiFlowTest {
         }
         shot("16_resize_tab")
         assertTrue(vm.problem == null)
+        // Robolectric's MediaStore is a stub, so only check saving on a real device
+        if (!robolectric) assertEquals(2, batchSaved)
     }
 }

@@ -223,6 +223,8 @@ class EngineTest {
                     val s = String(data, Charsets.ISO_8859_1)
                     assertTrue(s.startsWith("%PDF-1.4"))
                     assertTrue(s.endsWith("%EOF\n"))
+                    assertTrue(s.contains("/DCTDecode") && s.contains("/MediaBox [0 0 96.000 72.000]"))
+                    if (android.os.Build.FINGERPRINT == "robolectric") continue
                     val file = File(ctx.cacheDir, "t.pdf").apply { writeBytes(data) }
                     PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)).use { r ->
                         assertEquals(1, r.pageCount)

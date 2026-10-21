@@ -46,19 +46,8 @@ object ImageEngine {
         val mime = try { cr.getType(uri) } catch (_: Exception) { null }
 
         var sample = 1
-        val decoded: Bitmap = if (Build.VERSION.SDK_INT >= 28) {
-            val source = ImageDecoder.createSource(cr, uri)
-            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                val px = info.size.width.toLong() * info.size.height
-                while (px / (sample.toLong() * sample) > MAX_SOURCE_PIXELS) sample++
-                if (sample > 1) decoder.setTargetSampleSize(sample)
-                try {
-                    decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
-                } catch (_: Exception) {
-                }
-            }
-        } else {
+        fun legacy(): Bitmap {
+            sample = 1
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0) throw IOException("This file is not a supported image.")
@@ -77,12 +66,33 @@ object ImageEngine {
             }
             val deg = exif?.rotationDegrees ?: 0
             val flipped = exif?.isFlipped ?: false
-            if (deg != 0 || flipped) {
-                val m = Matrix()
-                m.postRotate(deg.toFloat())
-                if (flipped) m.postScale(-1f, 1f)
-                Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
-            } else raw
+            if (deg == 0 && !flipped) return raw
+            val m = Matrix()
+            m.postRotate(deg.toFloat())
+            if (flipped) m.postScale(-1f, 1f)
+            return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+        }
+
+        val decoded: Bitmap = if (Build.VERSION.SDK_INT >= 28) {
+            try {
+                val source = ImageDecoder.createSource(cr, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val px = info.size.width.toLong() * info.size.height
+                    while (px / (sample.toLong() * sample) > MAX_SOURCE_PIXELS) sample++
+                    if (sample > 1) decoder.setTargetSampleSize(sample)
+                    try {
+                        decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
+                    } catch (_: Exception) {
+                    }
+                }
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (e: Exception) {
+                legacy()   // e.g. a format ImageDecoder rejects but BitmapFactory reads
+            }
+        } else {
+            legacy()
         }
         val bmp = if (decoded.config == Bitmap.Config.ARGB_8888) decoded
         else decoded.copy(Bitmap.Config.ARGB_8888, false)
