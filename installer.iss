@@ -1,7 +1,7 @@
 ; Inno Setup script - creates ImageResizeShare-Setup.exe
 ; Build the app first (build.bat), then compile this file with Inno Setup 6.
 #define AppName "Image Resize & Share"
-#define AppVersion "1.0.0"
+#define AppVersion "3.1.1"
 #define AppExe "ImageResizeShare.exe"
 
 [Setup]

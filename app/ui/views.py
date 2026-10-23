@@ -25,8 +25,9 @@ class ZoomView(QGraphicsView):
     hovered = Signal(float, float)    # scene (= image pixel) coordinates under the mouse
     clicked = Signal(float, float)
 
-    def __init__(self, placeholder: str = "", parent=None):
+    def __init__(self, placeholder: str = "", parent=None, bg: str = "#f6f8fb"):
         super().__init__(parent)
+        self._bg = QColor(bg)
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self._item = QGraphicsPixmapItem()
@@ -41,7 +42,7 @@ class ZoomView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
-        self.setStyleSheet("background: #f6f8fb; border-radius: 8px;")
+        self.setStyleSheet(f"background: {bg}; border-radius: 8px;")
         self.setMinimumSize(200, 180)
         # let drops fall through to the main window
         self.setAcceptDrops(False)
@@ -80,6 +81,18 @@ class ZoomView(QGraphicsView):
         self._item.setTransformationMode(Qt.TransformationMode.FastTransformation if z >= 2
                                          else Qt.TransformationMode.SmoothTransformation)
         self.zoomChanged.emit(z)
+
+    def zoom_to(self, z: float) -> None:
+        """Zoom to ``z`` (1.0 = 100%) keeping the centre of the view in place."""
+        if not self._has_image:
+            return
+        c = self.mapToScene(self.viewport().rect().center())
+        self._fit = False
+        self.set_zoom(z)
+        self.centerOn(c)
+
+    def is_fit(self) -> bool:
+        return self._fit
 
     def fit(self) -> None:
         self._fit = True
@@ -157,7 +170,7 @@ class ZoomView(QGraphicsView):
             self.fit()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        painter.fillRect(rect, QColor("#f6f8fb"))
+        painter.fillRect(rect, self._bg)
         if self._has_image:
             painter.save()
             painter.setBrushOrigin(0, 0)
@@ -318,10 +331,17 @@ class CropCanvas(QWidget):
         o, s = self._origin(), self._scale()
         return QRectF(o.x() + r.x() * s, o.y() + r.y() * s, r.width() * s, r.height() * s)
 
+    def _effective_rect(self) -> Optional[QRectF]:
+        """The selection, or the whole image when nothing is selected."""
+        if self._rect is not None:
+            return self._rect
+        return QRectF(0, 0, self._W, self._H) if self._W else None
+
     def _handles(self) -> dict:
-        if self._rect is None:
+        er = self._effective_rect()
+        if er is None:
             return {}
-        r = self._to_widget_rect(self._rect)
+        r = self._to_widget_rect(er)
         cx, cy = r.center().x(), r.center().y()
         pts = {"tl": (r.left(), r.top()), "t": (cx, r.top()), "tr": (r.right(), r.top()),
                "r": (r.right(), cy), "br": (r.right(), r.bottom()), "b": (cx, r.bottom()),
@@ -402,8 +422,11 @@ class CropCanvas(QWidget):
             return
         self.editStarted.emit()
         self._press_img = self._to_img(pos)
-        self._press_rect = QRectF(self._rect) if self._rect is not None else QRectF()
         hit = self._hit(pos)
+        if self._rect is None and hit == "move":
+            hit = None            # dragging inside the full image draws a new selection
+        er = self._effective_rect()
+        self._press_rect = QRectF(er) if (hit and er is not None) else QRectF()
         self._drag = hit or "new"
         if self._drag == "new":
             p = self._clamp_pt(self._press_img)
@@ -468,6 +491,8 @@ class CropCanvas(QWidget):
 
     def _update_cursor(self, pos: QPointF) -> None:
         hit = self._hit(pos) if self._pix else None
+        if hit == "move" and self._rect is None:
+            hit = None
         shapes = {"tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
                   "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor,
                   "l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
@@ -492,13 +517,15 @@ class CropCanvas(QWidget):
         p.fillRect(img_r, self._checker)
         p.drawPixmap(img_r, self._pix, QRectF(self._pix.rect()))
 
-        if self._rect is not None and self._rect.width() > 0 and self._rect.height() > 0:
-            cr = self._to_widget_rect(self._rect)
-            shade = QPainterPath()
-            shade.addRect(img_r)
-            inner = QPainterPath()
-            inner.addRect(cr)
-            p.fillPath(shade.subtracted(inner), QColor(15, 23, 42, 140))
+        sel = self._rect if self._rect is not None else QRectF(0, 0, self._W, self._H)
+        if sel.width() > 0 and sel.height() > 0:
+            cr = self._to_widget_rect(sel)
+            if self._rect is not None:
+                shade = QPainterPath()
+                shade.addRect(img_r)
+                inner = QPainterPath()
+                inner.addRect(cr)
+                p.fillPath(shade.subtracted(inner), QColor(15, 23, 42, 140))
 
             if self._grid:
                 p.setPen(QPen(QColor(255, 255, 255, 150), 1))
@@ -507,19 +534,19 @@ class CropCanvas(QWidget):
                     y = cr.top() + cr.height() * i / 3
                     p.drawLine(QPointF(x, cr.top()), QPointF(x, cr.bottom()))
                     p.drawLine(QPointF(cr.left(), y), QPointF(cr.right(), y))
-            p.setPen(QPen(QColor(0, 0, 0, 120), 3))
+            p.setPen(QPen(QColor(0, 0, 0, 90), 3))
             p.drawRect(cr)
-            p.setPen(QPen(QColor("#ffffff"), 1.5))
+            p.setPen(QPen(QColor("#1a73e8"), 2))
             p.drawRect(cr)
 
-            p.setPen(QPen(QColor("#1a73e8"), 1.5))
-            p.setBrush(QColor("#ffffff"))
-            hs = self.HANDLE - 2
+            p.setPen(QPen(QColor("#ffffff"), 1.5))
+            p.setBrush(QColor("#1a73e8"))
+            hs = self.HANDLE
             for pt in self._handles().values():
                 p.drawRect(QRectF(pt.x() - hs / 2, pt.y() - hs / 2, hs, hs))
 
             t = self.rect_tuple()
-            if t:
+            if t and self._drag is not None:
                 label = f"{t[2]} × {t[3]} px"
                 f = QFont(self.font())
                 f.setPointSize(9)

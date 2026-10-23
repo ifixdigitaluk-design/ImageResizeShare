@@ -61,6 +61,7 @@ FORMATS = {
     "PNG": {"ext": ".png", "pil": "PNG", "lossy": False, "alpha": True},
     "WEBP": {"ext": ".webp", "pil": "WEBP", "lossy": True, "alpha": True},
     "PDF": {"ext": ".pdf", "pil": "PDF", "lossy": True, "alpha": False},
+    "TIFF": {"ext": ".tif", "pil": "TIFF", "lossy": False, "alpha": True},
 }
 
 UNITS = ("px", "%", "cm", "mm", "in")
@@ -181,6 +182,34 @@ def load_image(path: str | Path) -> LoadedImage:
     return LoadedImage(image=img, path=path, file_size=path.stat().st_size,
                        original_format=fmt, icc_profile=icc, exif=exif,
                        dpi=dpi, n_frames=n_frames)
+
+
+def load_error_text(path, exc: BaseException) -> str:
+    """A plain-words reason why a picture could not be opened."""
+    from PIL import UnidentifiedImageError
+    name = Path(str(path)).name
+    if isinstance(exc, FileNotFoundError):
+        return f"{name} could not be found. It may have been moved or deleted."
+    if isinstance(exc, PermissionError):
+        return f"{name} could not be read. It may be open in another program, or still downloading."
+    if isinstance(exc, Image.DecompressionBombError):
+        return f"{name} is too big to open safely (over {Image.MAX_IMAGE_PIXELS // 1_000_000} megapixels)."
+    if isinstance(exc, MemoryError):
+        return f"{name} is too big for this computer's memory."
+    try:
+        empty = Path(str(path)).stat().st_size == 0
+    except OSError:
+        empty = False
+    if empty:
+        return f"{name} is empty (0 bytes). It may not have finished copying or downloading."
+    if isinstance(exc, UnidentifiedImageError):
+        ext = Path(str(path)).suffix.lower()
+        if ext in (".heic", ".heif") and not HEIF_OK:
+            return f"{name} is an iPhone HEIC photo and HEIC support is not installed."
+        return f"{name} is not a picture this app can read, or the file is damaged."
+    if isinstance(exc, (OSError, SyntaxError, ValueError)):
+        return f"{name} looks damaged or incomplete ({exc}). Try saving or downloading it again."
+    return f"{name} could not be opened ({exc})."
 
 
 def from_pil(img: Image.Image, name: str = "pasted") -> LoadedImage:
@@ -336,7 +365,7 @@ def _antihalo(base: Image.Image, sharp: Image.Image) -> Image.Image:
     return ImageChops.darker(ImageChops.lighter(sharp, lo), hi)
 
 
-def _unsharp(img: Image.Image, amount: int, scale: float) -> Image.Image:
+def _unsharp(img: Image.Image, amount: int, scale: float, inplace: bool = False) -> Image.Image:
     if amount <= 0:
         return img
     if scale < 1:
@@ -348,16 +377,55 @@ def _unsharp(img: Image.Image, amount: int, scale: float) -> Image.Image:
     def f(im: Image.Image) -> Image.Image:
         sharp = im.filter(ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=threshold))
         return _antihalo(im, sharp) if scale > 1 else sharp
-    return _apply_rgb(img, f)
+    return _apply_rgb(img, f, 16, inplace)
 
 
-def _apply_rgb(img: Image.Image, fn: Callable[[Image.Image], Image.Image]) -> Image.Image:
-    """Apply a filter to colour channels only (keep alpha untouched)."""
+STRIP_PIXELS = 6_000_000     # big images are filtered in strips of about this size (low memory)
+
+
+def _in_strips(img: Image.Image, fn: Callable[[Image.Image], Image.Image], overlap: int = 16,
+               inplace: bool = False) -> Image.Image:
+    """fn(img) for a local filter (reach < overlap pixels), done strip by strip so a 200 MP
+    print needs a few MB of working memory instead of several GB. The result is identical to
+    fn(img). With inplace=True the result is written back into img (saves one full copy;
+    only for images nobody else uses)."""
+    w, h = img.size
+    rows = max(64, STRIP_PIXELS // max(1, w))
+    if h <= rows + 2 * overlap:
+        return fn(img)
+    out = img if inplace else Image.new(img.mode, img.size)
+    keep = None                       # original rows just above the current strip (inplace)
+    y = 0
+    while y < h:
+        y1 = min(h, y + rows)
+        b = min(h, y1 + overlap)
+        if not inplace:
+            a = max(0, y - overlap)
+            part, top = img.crop((0, a, w, b)), y - a
+        else:
+            below = img.crop((0, y, w, b))
+            if keep is not None:
+                part = Image.new(img.mode, (w, keep.height + below.height))
+                part.paste(keep, (0, 0))
+                part.paste(below, (0, keep.height))
+                top = keep.height
+            else:
+                part, top = below, 0
+            keep = img.crop((0, max(0, y1 - overlap), w, y1))     # before it is overwritten
+        res = fn(part)
+        out.paste(res.crop((0, top, w, top + (y1 - y))), (0, y))
+        y = y1
+    return out
+
+
+def _apply_rgb(img: Image.Image, fn: Callable[[Image.Image], Image.Image], overlap: int = 16,
+               inplace: bool = False) -> Image.Image:
+    """Apply a local filter to colour channels only (keep alpha untouched)."""
     if img.mode == "RGBA":
-        rgb = fn(img.convert("RGB"))
+        rgb = _in_strips(img.convert("RGB"), fn, overlap, inplace=True)     # a fresh copy anyway
         rgb.putalpha(img.getchannel("A"))
         return rgb
-    return fn(img)
+    return _in_strips(img, fn, overlap, inplace)
 
 
 def _stepwise_upscale(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
@@ -386,7 +454,7 @@ def resample(img: Image.Image, size: Tuple[int, int], method: str = UPSCALE_ENHA
     if not enlarging:
         out = img.resize((tw, th), RESAMPLE, reducing_gap=3.0)
         amount = _auto_sharpen_amount(scale) if sharpen < 0 else sharpen
-        return _unsharp(out, amount, scale)
+        return _unsharp(out, amount, scale, inplace=True)
 
     # ---- Enlarging -------------------------------------------------------
     if method in (UPSCALE_AI_PHOTO, UPSCALE_AI_ART):
@@ -409,11 +477,11 @@ def resample(img: Image.Image, size: Tuple[int, int], method: str = UPSCALE_ENHA
 
     if method == UPSCALE_STANDARD:
         out = img.resize((tw, th), RESAMPLE)
-        return _unsharp(out, max(0, sharpen), scale) if sharpen > 0 else out
+        return _unsharp(out, max(0, sharpen), scale, inplace=True) if sharpen > 0 else out
 
     out = _stepwise_upscale(img, (tw, th))
     amount = _auto_sharpen_amount(scale) if sharpen < 0 else sharpen
-    return _unsharp(out, amount, scale)
+    return _unsharp(out, amount, scale, inplace=True)
 
 
 # --------------------------------------------------------------------------
@@ -524,10 +592,13 @@ def encode(img: Image.Image, os_: OutputSettings, quality: Optional[int] = None,
 
     if fmt == "JPG":
         im = _flatten(img, os_.jpg_background)
-        kw.update(quality=q, optimize=True, progressive=True,
+        big = im.width * im.height > 40_000_000
+        # optimize / progressive keep the whole picture in memory (about 6 bytes a pixel), which
+        # very large prints cannot afford; the file is only ~5 % bigger without them
+        kw.update(quality=q, optimize=not big, progressive=not big,
                   subsampling=0 if q >= 85 else 2)  # 4:4:4 for high quality
-        # optimize/progressive JPEG needs the whole stream in one buffer
-        ImageFile.MAXBLOCK = max(ImageFile.MAXBLOCK, im.width * im.height * 3 + (1 << 20))
+        if not big:   # optimize/progressive JPEG needs the whole stream in one buffer
+            ImageFile.MAXBLOCK = max(ImageFile.MAXBLOCK, im.width * im.height * 3 + (1 << 20))
         im.save(buf, "JPEG", **kw)
     elif fmt == "PNG":
         im = img if img.mode == "RGBA" and has_transparency(img) else _flatten(img)
@@ -547,6 +618,10 @@ def encode(img: Image.Image, os_: OutputSettings, quality: Optional[int] = None,
         kw.pop("exif", None)
         kw.update(resolution=float(os_.dpi), quality=q)
         im.save(buf, "PDF", **kw)
+    elif fmt == "TIFF":
+        im = img if img.mode == "RGBA" and has_transparency(img) else _flatten(img)
+        kw.update(compression="tiff_lzw")   # lossless, the usual choice for print shops
+        im.save(buf, "TIFF", **kw)
     else:
         raise ValueError(f"Unsupported format {fmt}")
     return buf.getvalue()
