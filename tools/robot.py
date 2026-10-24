@@ -633,6 +633,27 @@ SCENARIOS = {"nav": sc_nav, "editor": sc_editor, "files": sc_files, "studio": sc
              "extreme": sc_extreme, "jobs": sc_jobs}
 
 
+def _exit(code: int) -> None:
+    """Leave at once. On Windows os._exit still unloads the Qt DLLs, which can crash
+    (access violation) after the run, turning "ROBOT OK" into a failure."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            k32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            k32.TerminateProcess(k32.GetCurrentProcess(), code)
+        except Exception:
+            pass
+    os._exit(code)
+
+
 def main() -> int:
     args = sys.argv[1:]
     seed = 1
@@ -746,10 +767,10 @@ def main() -> int:
             seen.add(key)
             print(e.rstrip(), "\n" + "-" * 70)
         restore_settings()
-        os._exit(1)
+        _exit(1)
     print("ROBOT OK")
     restore_settings()
-    os._exit(0)
+    _exit(0)
 
 
 if __name__ == "__main__":

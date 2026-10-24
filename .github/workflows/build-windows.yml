@@ -82,7 +82,18 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-        run: python -X faulthandler tools/robot.py --seed 1 --out robot-logs
+        shell: pwsh
+        run: |
+          python -X faulthandler tools/robot.py --seed 1 --out robot-logs *> robot.log
+          $code = $LASTEXITCODE
+          Get-Content robot.log
+          if ($code -ne 0) {
+            $lines = Get-Content robot.log
+            $start = [Math]::Max(0, $lines.Count - 150)
+            $msg = ($lines[$start..($lines.Count - 1)] -join "`n") -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+            Write-Output "::error title=Robot (fixed click order) failed (exit code $code)::$msg"
+            exit $code
+          }
 
       - name: Robot (new click order every build)
         timeout-minutes: 25
@@ -90,7 +101,18 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-        run: python -X faulthandler tools/robot.py --seed ${{ github.run_number }} --out robot-logs
+        shell: pwsh
+        run: |
+          python -X faulthandler tools/robot.py --seed ${{ github.run_number }} --out robot-logs *> robot.log
+          $code = $LASTEXITCODE
+          Get-Content robot.log
+          if ($code -ne 0) {
+            $lines = Get-Content robot.log
+            $start = [Math]::Max(0, $lines.Count - 150)
+            $msg = ($lines[$start..($lines.Count - 1)] -join "`n") -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+            Write-Output "::warning title=Robot (new click order every build) found problems (exit code $code)::$msg"
+            exit $code
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
