@@ -182,8 +182,7 @@ def test_layer_window_matches_the_whole_layer():
         assert part.shape == ref.shape and np.abs(part - ref).mean() < 3
 
 
-def test_huge_text_layer_renders_only_what_is_shown():
-    import resource
+def test_huge_text_layer_renders_only_what_is_shown(peak_mb):
     j = wl.Job(job_no="T")
     j.walls[0].width, j.walls[0].height = 4.0, 2.6
     lay = ly.new_text_layer(j, "HUGE")
@@ -195,7 +194,7 @@ def test_huge_text_layer_renders_only_what_is_shown():
 
         def render(self, x0, y0, x1, y1, w, h, fast=False):
             return Image.new("RGB", (w, h), (200, 200, 200))
-    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    before = peak_mb()
     out = ly.LayeredSource(Plain(), j, None).render(0, 0, j.art_width, j.art_height, 2400, 1600)
     assert out.size == (2400, 1600)
-    assert (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024 < 600
+    assert peak_mb() - before < 600

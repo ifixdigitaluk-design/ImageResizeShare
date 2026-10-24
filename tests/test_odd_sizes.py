@@ -74,19 +74,18 @@ def test_room_for_a_tall_narrow_wall_stays_a_sensible_size():
     assert img.width * img.height <= mk.MAX_ROOM_PX * 1.01
 
 
-def test_tiny_design_on_a_big_wall_renders_without_a_huge_picture():
-    import resource
+def test_tiny_design_on_a_big_wall_renders_without_a_huge_picture(peak_mb):
     from PIL import Image
     from app.core import production as pr
     from app.core import wall as wl
     j = wl.Job(job_no="T")
     j.walls[0].width, j.walls[0].height = 20.0, 3.0
     src = pr.ImageSource(Image.new("RGB", (2, 2), (200, 30, 30)), j)
-    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    before = peak_mb()
     cx, cy = j.art_width / 2, j.art_height / 2
     sw = src.render(cx - 0.075, cy - 0.075, cx + 0.075, cy + 0.075, 600, 600)     # the Room View swatch
     assert sw.size == (600, 600)
-    grown_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024
+    grown_mb = peak_mb() - before
     assert grown_mb < 300
 
 
