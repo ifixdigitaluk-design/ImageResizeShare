@@ -18,6 +18,9 @@ print file and send it on WhatsApp.
   Download / Share / Print make the full size once. The file size shown while editing is an estimate (≈).
 * **AI-enhance the print files** (Send to Print): each panel is made with the AI upscaler straight from
   your design, so even walls too big to upscale in one file get sharp detail.
+* **AI Upscale shows its progress** (e.g. "AI upscaling… 40%"), has a **Cancel** button, and no longer
+  seems to load forever: if the graphics card stops responding, it retries with smaller pieces and then
+  finishes with Enhanced, telling you why (updating the graphics driver usually helps).
 * **No more "Not responding"**: opening big pictures, the test strip, Expand to fit and the options sheet
   work in the background with a progress box.
 * **Help** button (Jobs page): **Send an error report** (a small zip with the error list and PC details –

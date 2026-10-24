@@ -208,13 +208,19 @@ class UpscaleJob(QRunnable):
         self.gen, self.img, self.us, self.ai = gen, img, us, ai
         self.signals = _Signals()
 
+    cancelled = False
+
     def run(self) -> None:
+        from app.core.ai_upscale import Cancelled
         t0 = time.time()
         notes: list = []
         try:
             out = up.upscale(self.img, self.us, self.ai, notes,
-                             progress=lambda m: self.signals.progress.emit(self.gen, m))
+                             progress=lambda m: self.signals.progress.emit(self.gen, m),
+                             cancel=lambda: self.cancelled)
             self.signals.finished.emit(self.gen, out, notes, time.time() - t0)
+        except Cancelled:
+            self.signals.failed.emit(self.gen, "Cancelled")
         except MemoryError:
             self.signals.failed.emit(self.gen, "Not enough memory for this size. Choose a smaller factor.")
         except Exception as exc:
@@ -314,7 +320,12 @@ class UpscaleDialog(SheetDialog):
         self.b_save.clicked.connect(self.save_result)
         self.b_use.clicked.connect(self.use_result)
         b_close.clicked.connect(self.reject)
-        for b in (self.b_go, self.b_save, self.b_use, b_close):
+        self.b_cancel = QPushButton("Cancel")
+        self.b_cancel.setObjectName("Light")
+        self.b_cancel.setMinimumHeight(48)
+        self.b_cancel.setVisible(False)
+        self.b_cancel.clicked.connect(self.cancel_upscale)
+        for b in (self.b_go, self.b_cancel, self.b_save, self.b_use, b_close):
             foot.addWidget(b)
         self.body.addLayout(foot)
 
@@ -642,6 +653,8 @@ class UpscaleDialog(SheetDialog):
         self.jobs.add(job)
         self._t0 = time.time()
         self.progress.setVisible(True)
+        self.b_cancel.setVisible(True)
+        self.b_cancel.setEnabled(True)
         self.b_go.setEnabled(False)
         self.compare.set_busy("Upscaling…")
         self.elapsed.start()
@@ -664,6 +677,7 @@ class UpscaleDialog(SheetDialog):
         if not self.jobs:
             self.elapsed.stop()
             self.progress.setVisible(False)
+            self.b_cancel.setVisible(False)
             self.compare.set_busy("")
 
     def _on_done(self, gen, img, notes, secs) -> None:
@@ -678,10 +692,17 @@ class UpscaleDialog(SheetDialog):
             self.info.setText(self.info.text() + "   ·   " + " ".join(notes))
         self.info.setToolTip(f"Done in {secs:.1f} s")
 
+    def cancel_upscale(self) -> None:
+        for j in self.jobs:
+            j.cancelled = True
+        self.b_cancel.setEnabled(False)
+        self._status = "Cancelling…"
+        self._tick()
+
     def _on_failed(self, gen, msg) -> None:
         self._finish_job(gen)
         self._update_info()
-        if gen == self.gen:
+        if gen == self.gen and msg != "Cancelled":
             QMessageBox.warning(self, "Upscale failed", msg)
 
     def wait_done(self, timeout_ms: int = 600000) -> None:
@@ -735,4 +756,6 @@ class UpscaleDialog(SheetDialog):
 
     def reject(self) -> None:
         self._save_settings()
+        for j in self.jobs:                 # closing stops the AI program too
+            j.cancelled = True
         super().reject()

@@ -1951,14 +1951,20 @@ class MainWindow(QMainWindow):
         dlg = None
         self._preparing = True
         try:
-            run_bg(lambda _p: im.process(src, st, rs, os_, ai), done, failed)
-            if rs.enabled and rs.width * rs.height > 30_000_000:
+            uses_ai = rs.upscale in (im.UPSCALE_AI_PHOTO, im.UPSCALE_AI_ART) and ai is not None and ai.available()
+            if (rs.enabled and rs.width * rs.height > 30_000_000) or uses_ai:
                 dlg = QProgressDialog("Preparing the full-size image…", "", 0, 0, self)
                 dlg.setCancelButton(None)
                 dlg.setWindowTitle("Image Resize & Share")
-                dlg.setMinimumDuration(0)
+                dlg.setMinimumDuration(0 if not uses_ai else 300)
                 dlg.setWindowModality(Qt.WindowModality.WindowModal)
                 dlg.show()
+
+            def shown(_f, text):                  # e.g. "AI upscaling… 40%"
+                if dlg is not None and text:
+                    dlg.setLabelText(text)
+            run_bg(lambda p: im.process(src, st, rs, os_, ai, progress=lambda m: p(0, m)), done, failed,
+                   on_progress=shown)
             if "res" not in box and "err" not in box:
                 loop.exec()
         finally:
@@ -2096,7 +2102,7 @@ class MainWindow(QMainWindow):
         if x1 <= x0 or y1 <= y0 or (x1 - x0) * (y1 - y0) > 4_000_000:
             return
         from app.ui.worker import run_bg
-        src, st, ai, gen = self.src, self.state.copy(), self.ai, self.gen
+        src, st, gen = self.src, self.state.copy(), self.gen
         rs, _os = self.current_settings()
         self._cu_busy = True
 
@@ -2108,7 +2114,9 @@ class MainWindow(QMainWindow):
         def failed(_msg):
             self._cu_busy = False
 
-        run_bg(lambda _p: im.render_region(src, st, rs, (x0, y0, x1, y1), ai), done, failed)
+        # without AI: it takes seconds per spot and handles one job at a time (it would hold up the
+        # AI Upscale window); the full-size Download still uses AI
+        run_bg(lambda _p: im.render_region(src, st, rs, (x0, y0, x1, y1), None), done, failed)
 
     def _on_out_hover(self, x: float, y: float) -> None:
         if self._cu_pinned or not self.result:

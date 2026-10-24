@@ -364,7 +364,7 @@ def test_ai_engine_second_pass_targets_size(monkeypatch):
     eng._cache_key = eng._cache_img = eng._cache2_key = eng._cache2_img = None
     calls = []
 
-    def fake_x4(img, art):
+    def fake_x4(img, art, *_a, **_k):
         calls.append(img.size)
         return img.resize((img.width * 4, img.height * 4))
     eng._run_x4 = fake_x4

@@ -428,7 +428,7 @@ class _FakeAI:
     def available(self):
         return True
 
-    def upscale_to(self, img, size, art=False):
+    def upscale_to(self, img, size, art=False, progress=None, cancel=None):
         self.calls.append((img.size, size, art))
         return img.resize(size, Image.Resampling.LANCZOS)
 

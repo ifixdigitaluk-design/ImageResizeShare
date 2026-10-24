@@ -483,7 +483,7 @@ def resample(img: Image.Image, size: Tuple[int, int], method: str = UPSCALE_ENHA
                 if progress:
                     progress("AI enhancing… (this can take a few seconds)")
                 big = ai_engine.upscale_to(img, (tw, th),
-                                           art=(method == UPSCALE_AI_ART))
+                                           art=(method == UPSCALE_AI_ART), progress=progress)
                 out = big.resize((tw, th), RESAMPLE, reducing_gap=3.0) if big.size != (tw, th) else big
                 if sharpen > 0:
                     out = _unsharp(out, sharpen // 2, 1.0)

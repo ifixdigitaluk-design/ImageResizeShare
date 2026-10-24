@@ -214,7 +214,14 @@ def install_patches() -> None:
     from app.ui import support                       # "Check for updates": no internet in tests
     support.fetch_releases = lambda *a, **k: [{"tag_name": "windows-v9.9.9.1", "html_url": "https://example.invalid"}]
     import subprocess
-    subprocess.Popen = lambda *a, **k: LOG.append(f"Popen {a}")      # never start other programs
+    real_popen = subprocess.Popen
+
+    def popen(cmd, *a, **k):                  # never start other programs – except the AI engine
+        first = str(cmd[0] if isinstance(cmd, (list, tuple)) else cmd)
+        if "realesrgan" in first.lower():
+            return real_popen(cmd, *a, **k)
+        LOG.append(f"Popen {cmd}")
+    subprocess.Popen = popen
     if hasattr(os, "startfile"):
         os.startfile = lambda *a, **k: None
 
@@ -689,6 +696,14 @@ def main() -> int:
         ERRORS.append(f"[{_scenario[0]}] " + "".join(traceback.format_exception(t, v, tb)))
         real_hook(t, v, tb)
     sys.excepthook = hook
+    import threading
+    real_thook = threading.excepthook
+
+    def thook(args):                          # errors in background threads, in full
+        ERRORS.append(f"[{_scenario[0]}] (thread) " + "".join(
+            traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+        real_thook(args)
+    threading.excepthook = thook
 
     app = QApplication(sys.argv[:1])
     app.setOrganizationName("ImageResizeShare-robot")      # never touch the real app's settings

@@ -150,7 +150,8 @@ def _texture(img: Image.Image, amount: int) -> Image.Image:
 
 
 def upscale(img: Image.Image, us: UpscaleSettings, ai_engine=None, notes: Optional[list] = None,
-            progress: Optional[Callable[[str], None]] = None) -> Image.Image:
+            progress: Optional[Callable[[str], None]] = None,
+            cancel: Optional[Callable[[], bool]] = None) -> Image.Image:
     """Enlarge ``img`` with the chosen mode and fine-tune settings."""
     tw, th = target_size(img.size, us)
     msg = check_target((tw, th))
@@ -161,12 +162,21 @@ def upscale(img: Image.Image, us: UpscaleSettings, ai_engine=None, notes: Option
 
     used_ai = False
     if scale > 1.0 and ai_engine is not None and ai_engine.available():
+        from app.core.ai_upscale import AIStalled, Cancelled
         try:
             if progress:
-                progress("AI upscaling… large images can take a minute")
-            big = ai_engine.upscale_to(work, (tw, th), art=(us.mode == MODE_ART))
+                progress("AI upscaling… starting the AI engine")
+            big = ai_engine.upscale_to(work, (tw, th), art=(us.mode == MODE_ART), progress=progress,
+                                       cancel=cancel)
             out = big if big.size == (tw, th) else big.resize((tw, th), im.RESAMPLE, reducing_gap=3.0)
             used_ai = True
+        except Cancelled:
+            raise
+        except AIStalled:
+            if notes is not None:
+                notes.append("The AI engine stopped responding on this PC's graphics (try updating the graphics "
+                             "driver); used Enhanced instead.")
+            out = None
         except Exception as exc:
             if notes is not None:
                 notes.append(f"AI engine could not run ({exc}); used Enhanced instead.")

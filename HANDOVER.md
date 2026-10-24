@@ -35,7 +35,7 @@ Then paste the prompt below.
 ```
 pip install -r requirements.txt --break-system-packages
 pip install -r requirements-dev.txt pyflakes --break-system-packages
-python3 -m pytest -q                 # 146 tests, all pass
+python3 -m pytest -q                 # 154 tests, all pass
 python3 main.py --selftest           # full app self-test, must end with OK
 python3 -m pyflakes app main.py tests tools   # must be clean
 MALLOC_MMAP_THRESHOLD_=1048576 python3 tools/robot.py --seed 1 --mem   # click-everything robot, must end ROBOT OK
@@ -227,6 +227,22 @@ looks much higher than on a real PC.
     - Colour (colourways, adjust, replace colour) on a big design used whole-picture Lab arrays (about
       6 GB for 250 MP): now in strips, identical result.
 
+## AI upscale fixes (after the owner reported "AI upscale keeps loading")
+54. The AI program (Real-ESRGAN) ran silently with a 15-minute timeout per pass (two passes for 16×), so
+    a graphics-driver stall looked like endless loading. Now (`app/core/ai_upscale.py`):
+    - live progress ("AI upscaling… 40%") read from the program's output;
+    - no output for 90 s = stalled: it is stopped and tried once more with small tiles (`-t 128`,
+      gentler on laptop graphics); out-of-graphics-memory errors retry the same way; if it still fails,
+      the upscale finishes with Enhanced and says why ("try updating the graphics driver");
+    - a Cancel button in the AI Upscale window (closing the window also stops the AI program);
+    - a small enlargement of a big picture no longer makes a full 4× picture first (the AI pass makes
+      about 2× the target, never less than the target);
+    - "Waiting for the AI engine…" when another job is using it (one job at a time);
+    - the editor's close-up no longer queues AI runs for every spot you hover (it held up the AI window);
+    - the editor's Download/Share box shows the AI progress, also for small sizes.
+    Tested with a stand-in AI program that can succeed, run slowly, freeze, fail on the GPU or run out of
+    graphics memory (`tests/test_ai_engine.py`, Linux/macOS), and in the app's windows.
+
 ## Still to do (next steps)
 The robot runs clean on seeds 1–8 at 1920×1080, 1366×768 and 1280×680 (all scenarios); 146 tests pass;
 the self-test passes at all three screen sizes. What's left needs you or the real Windows PC:
@@ -234,7 +250,8 @@ the self-test passes at all three screen sizes. What's left needs you or the rea
 1. Fill in `SUPPORT_EMAIL` / `SUPPORT_WHATSAPP` in `app/__init__.py` so error reports reach you directly.
 2. Updates: make the GitHub repository public, or host `latest.json` and set `UPDATE_JSON_URL`.
 3. Signing: buy a code-signing certificate and add the two GitHub secrets.
-4. On the real PC: try AI-enhance on a big wall with the real AI engine, and a 250 MP print in the editor
+4. On the real PC: try AI Upscale (watch the % and the Cancel button), AI-enhance on a big wall with the
+   real AI engine, and a 250 MP print in the editor
    (Task Manager should show well under 1 GB while editing).
 
 ## Things that can only be tested on the real Windows PC
