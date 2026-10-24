@@ -25,7 +25,7 @@ anti-halo sharpening, print sizes, proof sheets and one-tap WhatsApp sharing.
 | **Preview** | Result / Original toggle, pinch-zoom, double-tap for 100%, real output file size |
 | **Close-up** | Before vs After at 100–800% wherever you tap; the area is outlined on the preview |
 | **Save** | JPG, PNG, WEBP (lossy/lossless), PDF (exact print size). Max file size (e.g. ≤ 200 KB). DPI written into the file. Saved to `Pictures/Image Resize & Share`, never overwriting |
-| **Share** | Share sheet, Copy, **Send on WhatsApp** (optionally straight to a phone number). A copy goes to `Pictures/Image Resize & Share/WhatsApp` so you can send it as a *Document* in full quality |
+| **Share** | Share sheet, Copy, **Send on WhatsApp** (optionally straight to a phone number – local numbers such as 07700 900123 get the phone's country code added). A copy goes to `Pictures/Image Resize & Share/WhatsApp` so you can send it as a *Document* in full quality |
 | **Proof sheet** | Size in inches / feet+inches / cm, area in Sq.Ft / Sq.M, editable note, close-up inset (tap to place), watermark, footer. Save JPG / PNG / PDF or send on WhatsApp |
 | **Batch** | Resize or convert many photos at once (keep size, %, fit within W×H, exact W×H) and share them all |
 

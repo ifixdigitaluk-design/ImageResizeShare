@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import re
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -10,6 +11,8 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGridLayout, QHB
                                QPushButton, QSpinBox, QVBoxLayout)
 
 from app.core import imaging as im
+from app.ui.errors import write_bytes_safely
+from app.ui.qtutil import FreeAfterExec
 from app.ui.qtutil import hint, icon, section
 
 R_KEEP, R_PERCENT, R_FIT, R_EXACT = range(4)
@@ -31,13 +34,24 @@ class BatchThread(QThread):
 
     def run(self):
         ok, errors = 0, []
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:                     # name too long, read-only drive, bad characters …
+            why = ("the name is too long" if getattr(exc, "errno", None) == 36 or getattr(exc, "winerror", 0) == 206
+                   else "Windows did not allow it" if isinstance(exc, PermissionError) else str(exc))
+            self.progress.emit(len(self.files), len(self.files), "")
+            self.done.emit(0, [f"The output folder could not be made ({why}). Choose another folder."])
+            return
         for i, f in enumerate(self.files):
             if self._cancel:
                 break
             self.progress.emit(i, len(self.files), Path(f).name)
             try:
-                src = im.load_image(f)
+                try:
+                    src = im.load_image(f)
+                except Exception as exc:
+                    errors.append(im.load_error_text(f, exc))
+                    continue
                 W, H = src.image.size
                 rs = replace(self.rs)
                 if self.mode == R_KEEP:
@@ -54,16 +68,24 @@ class BatchThread(QThread):
                 ow, oh = res.image.size
                 name = (self.pattern.replace("{name}", Path(f).stem)
                         .replace("{w}", str(ow)).replace("{h}", str(oh)))
-                out = im.unique_path(self.out_dir / (name + im.FORMATS[self.os_.fmt]["ext"]))
-                out.write_bytes(res.data)
+                name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or Path(f).stem
+                out = im.unique_path(self.out_dir / (name[:120] + im.FORMATS[self.os_.fmt]["ext"]))
+                write_bytes_safely(out, res.data)
                 ok += 1
+            except MemoryError:
+                errors.append(f"{Path(f).name}: not enough memory for this size.")
+            except PermissionError:
+                errors.append(f"{Path(f).name}: the output folder is read-only or the file is open elsewhere.")
+            except OSError as exc:
+                errors.append(f"{Path(f).name}: " + ("the disk is full." if getattr(exc, "errno", None) == 28
+                                                     else str(exc)))
             except Exception as exc:
                 errors.append(f"{Path(f).name}: {exc}")
         self.progress.emit(len(self.files), len(self.files), "")
         self.done.emit(ok, errors)
 
 
-class BatchDialog(QDialog):
+class BatchDialog(FreeAfterExec, QDialog):
     def __init__(self, parent, files, rs: im.ResizeSettings, os_: im.OutputSettings,
                  ai, exts, start_dir: str = ""):
         super().__init__(parent)

@@ -256,3 +256,167 @@ def test_proof_sheet():
     img2 = proof.render_proof(make_photo(400, 300), ps2)
     ox, oy, dw, dh = img2.info["design_box"]
     assert abs(dw / dh - 2.0) < 0.02
+
+
+# ----------------------------------------------------------------------
+# Print size labels and customer preview sheets
+# ----------------------------------------------------------------------
+def test_print_labels():
+    from app.core import sheets as sh
+    assert sh.size_text(4, 3) == "4.00 in × 3.00 in"
+    assert sh.size_alt_text(4, 3) == "(10.16 cm × 7.62 cm / 102 mm × 76 mm)"
+    assert sh.size_alt_text(4, 3, first_only=True) == "(10.16 cm × 7.62 cm)"
+    assert sh.size_words(4, 3) == "4 inches × 3 inches"
+    assert sh.length_label(4) == "4 inches (10.16 cm / 102 mm)"
+    assert sh.length_label(1) == "1 inch (2.54 cm / 25 mm)"
+    assert sh.area_text(4, 3) == "0.083 sq ft"
+    assert sh.area_text(125, 104) == "90.28 sq ft"
+    assert sh.area_text(120, 96, "sqm") == "7.43 sq m"
+    assert abs(sh.from_unit(sh.to_unit(37.5, "ft"), "ft") - 37.5) < 1e-9
+    assert sh.size_text(120, 96, "ft") == "10.00 ft × 8.00 ft"
+    spec = sh.PrintSpec.from_pixels(1200, 900, 300)
+    assert (spec.width_in, spec.height_in) == (4.0, 3.0)
+    assert sh.print_quality(1200, 900, 4, 3)[1] == "good"
+    assert sh.print_quality(1200, 900, 120, 90)[1] == "low"
+
+
+def test_download_and_closeup_sheets():
+    from app.core import sheets as sh
+    spec = sh.PrintSpec(4, 3)
+    a = sh.render_download_preview(make_photo(400, 300), spec, sh.SheetOptions(width_px=900, footer="Shop"))
+    assert a.width == 900 and a.height > 700
+    b = sh.render_closeup_preview(make_photo(400, 300), spec, (0.2, 0.8), 3.0, sh.SheetOptions(width_px=900))
+    assert b.width == 900
+    # tall banner + white bars + watermark still renders
+    c = sh.render_download_preview(make_photo(400, 300), sh.PrintSpec(24, 72, "in"),
+                                   sh.SheetOptions(width_px=600, fill=False, watermark="SAMPLE"))
+    assert c.height > c.width
+    assert sh.sheet_filename("wall.jpg", sh.PrintSpec(120, 96, "ft"), "preview", ".jpg") == \
+        "wall_preview_10x8ft.jpg"
+
+
+@pytest.mark.parametrize("center", [(0.1, 0.1), (0.5, 0.5), (0.9, 0.9), (0.9, 0.1), (0.1, 0.9)])
+def test_closeup_layout_inside_picture(center):
+    from app.core import sheets as sh
+    lay = sh.closeup_layout(800, 600, center, 2.0)
+    for x0, y0, x1, y1 in (lay.box, lay.inset):
+        assert 0 <= x0 < x1 <= 800 and 0 <= y0 < y1 <= 600
+    # inset shows the marked spot magnified by the zoom factor
+    assert abs((lay.inset[2] - lay.inset[0]) / (lay.box[2] - lay.box[0]) - 2.0) < 0.01
+    if center in ((0.1, 0.1), (0.9, 0.9), (0.9, 0.1), (0.1, 0.9)):
+        assert not sh._overlap(lay.box, lay.inset)
+
+
+def test_shape_to_print():
+    from app.core import sheets as sh
+    img = make_photo(400, 300)
+    assert sh.shape_to_print(img, 10, 10, fill=True).size == (300, 300)
+    assert sh.shape_to_print(img, 10, 10, fill=False).size == (400, 400)
+
+
+# ----------------------------------------------------------------------
+# AI Upscale studio engine
+# ----------------------------------------------------------------------
+def test_upscale_factors_and_fallback():
+    from app.core import upscale as up
+    notes = []
+    out = up.upscale(make_photo(100, 75), up.UpscaleSettings(factor=3.0), ai_engine=None, notes=notes)
+    assert out.size == (300, 225) and notes and "Enhanced" in notes[0]
+
+
+@pytest.mark.parametrize("name", [n for n, _ in __import__("app.core.upscale", fromlist=["PRESETS"]).PRESETS])
+def test_upscale_presets_run(name):
+    from app.core import upscale as up
+    us = up.apply_preset(up.UpscaleSettings(factor=2.0), name)
+    out = up.upscale(make_photo(80, 60, alpha=(name == "Text & Logo")), us)
+    assert out.size == (160, 120)
+    if name == "Text & Logo":
+        assert out.mode == "RGBA"   # transparency kept
+
+
+def test_upscale_fit_print_size_and_limits():
+    from app.core import upscale as up
+    assert up.size_for_print((400, 300), 120, 90, 100) == (12000, 9000)
+    us = up.UpscaleSettings(target=up.size_for_print((400, 300), 20, 15, 100))
+    assert up.target_size((400, 300), us) == (2000, 1500)
+    assert up.check_target((40000, 100)) is not None
+    with pytest.raises(ValueError):
+        up.upscale(make_photo(100, 100), up.UpscaleSettings(factor=16.0, target=(40000, 40000)))
+
+
+def test_upscale_detail_is_sharper_than_plain():
+    from app.core import upscale as up
+    small = make_photo(120, 90)
+    soft = up.upscale(small, up.UpscaleSettings(factor=4.0, detail=0, denoise=0))
+    crisp = up.upscale(small, up.UpscaleSettings(factor=4.0, detail=80, denoise=0))
+    creative = up.upscale(small, up.UpscaleSettings(mode=up.MODE_CREATIVE, factor=4.0, detail=80,
+                                                   denoise=0, texture=40))
+    assert edge_energy(crisp) > edge_energy(soft)
+    assert edge_energy(creative) > edge_energy(crisp)
+
+
+def test_ai_engine_second_pass_targets_size(monkeypatch):
+    """8x/16x: the 4x result is resized so the 2nd AI pass lands on the target."""
+    from app.core import ai_upscale as ai
+    eng = ai.RealEsrgan.__new__(ai.RealEsrgan)
+    import threading
+    eng.exe, eng.gpu_error, eng._lock = "x", None, threading.Lock()
+    eng._cache_key = eng._cache_img = eng._cache2_key = eng._cache2_img = None
+    calls = []
+
+    def fake_x4(img, art):
+        calls.append(img.size)
+        return img.resize((img.width * 4, img.height * 4))
+    eng._run_x4 = fake_x4
+    out = eng.upscale_to(make_photo(100, 50), (800, 400))
+    assert calls == [(100, 50), (200, 100)] and out.size == (800, 400)
+    calls.clear()
+    eng.upscale_to(make_photo(100, 50), (800, 400))      # cached
+    assert calls == []
+
+
+def test_tiff_output():
+    data = im.encode(make_photo(), im.OutputSettings(fmt="TIFF", dpi=150))
+    r = Image.open(io.BytesIO(data))
+    assert r.format == "TIFF" and r.size == (400, 300) and round(r.info["dpi"][0]) == 150
+
+
+# ---- fast preview of big prints (3.1.1) -----------------------------------
+def _pattern_src():
+    import numpy as np
+    from PIL import ImageDraw, ImageFilter
+    rng = np.random.default_rng(0)
+    base = Image.fromarray(rng.integers(0, 255, (300, 400, 3), dtype=np.uint8)).filter(ImageFilter.GaussianBlur(2))
+    ImageDraw.Draw(base).line([(0, 0), (400, 300)], fill=(255, 255, 255), width=3)
+    return im.from_pil(base, "p.png")
+
+
+@pytest.mark.parametrize("mode", [im.MODE_FIT_PAD, im.MODE_FILL, im.MODE_STRETCH, im.MODE_FIT_INSIDE])
+def test_close_up_region_matches_the_real_output(mode):
+    import numpy as np
+    src = _pattern_src()
+    st = im.EditState(rotation=90, crop=(10, 20, 250, 300))
+    rs = im.ResizeSettings(width=2400, height=1500, mode=mode)
+    full = im.process(src, st, rs, im.OutputSettings(fmt="PNG")).image
+    for x0, y0 in ((0, 0), (full.width // 2, full.height // 3), (full.width - 200, full.height - 150)):
+        box = (x0, y0, min(full.width, x0 + 200), min(full.height, y0 + 150))
+        a = np.asarray(full.crop(box).convert("RGB"), np.int16)
+        b = np.asarray(im.render_region(src, st, rs, box).convert("RGB"), np.int16)
+        assert a.shape == b.shape
+        assert np.abs(a - b).mean() < 2.5
+
+
+def test_big_print_is_previewed_small_and_sized_right():
+    src = _pattern_src()
+    rs = im.ResizeSettings(width=6000, height=4000)
+    os_ = im.OutputSettings(fmt="JPG")
+    p = im.process_preview(src, im.EditState(), rs, os_, max_px=2_000_000)
+    assert p.is_preview and p.out_size == (6000, 4000)
+    assert p.image.width * p.image.height <= 2_100_000
+    real = len(im.process(src, im.EditState(), rs, os_).data)
+    assert 0.6 < im.estimated_bytes(p) / real < 1.5
+    small = im.process_preview(src, im.EditState(), im.ResizeSettings(width=800, height=600), os_)
+    assert not small.is_preview and small.image.size == (800, 600)
+    target = im.process_preview(src, im.EditState(), rs, im.OutputSettings(fmt="JPG", target_kb=300),
+                                max_px=2_000_000)
+    assert not target.is_preview                   # a target file size is always made for real

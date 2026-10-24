@@ -7,19 +7,19 @@ from pathlib import Path
 from PIL import Image
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from app.core import imaging as im
 from app.core import proof
 from app.ui import share
+from app.ui.qtutil import FreeAfterExec
 from app.ui.qtutil import Card, hint, icon, pil_to_qimage, section
 from app.ui.views import ZoomView
 
 MAX_SOURCE_SIDE = 6000   # enough for a crisp close-up, keeps the dialog fast
 
 
-class ProofDialog(QDialog):
+class ProofDialog(FreeAfterExec, QDialog):
     def __init__(self, parent, image: Image.Image, src_name: str | None, dpi: int,
                  wa_target: str = "web", wa_phone: str = ""):
         super().__init__(parent)
@@ -29,11 +29,8 @@ class ProofDialog(QDialog):
         self.src_name = src_name
         self.wa_target, self.wa_phone = wa_target, wa_phone
         self.full_px = image.size
-        img = image.convert("RGB")
-        if max(img.size) > MAX_SOURCE_SIDE:
-            img = img.copy()
-            img.thumbnail((MAX_SOURCE_SIDE, MAX_SOURCE_SIDE), Image.Resampling.LANCZOS)
-        self.image = img
+        from app.ui.qtutil import small_rgb
+        self.image = small_rgb(image, (MAX_SOURCE_SIDE, MAX_SOURCE_SIDE), Image.Resampling.LANCZOS)
         self.ratio = image.height / image.width
         self.rendered: Image.Image | None = None
         self.ps = proof.ProofSettings()
@@ -296,10 +293,8 @@ class ProofDialog(QDialog):
         if fmt is None:
             fmt = "PNG" if "PNG" in flt else "PDF" if "PDF" in flt else "JPG"
             p = p.with_suffix(im.FORMATS[fmt]["ext"])
-        try:
-            p.write_bytes(self._encode(fmt))
-        except OSError as exc:
-            QMessageBox.warning(self, "Could not save", str(exc))
+        from app.ui.errors import save_or_warn, write_bytes_safely
+        if not save_or_warn(self, lambda: write_bytes_safely(p, self._encode(fmt)), p):
             return
         self.settings.setValue("last_save_dir", str(p.parent))
         self.info.setText(f"Saved {p.name}")

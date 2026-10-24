@@ -48,6 +48,12 @@ echo Checking the built app...
 dist\ImageResizeShare\ImageResizeShare.exe --selftest
 if errorlevel 1 (echo Built app self-test failed & pause & exit /b 1)
 
+REM Optional code signing: set IRS_SIGN_PFX (path to your .pfx) and IRS_SIGN_PASSWORD first
+if defined IRS_SIGN_PFX (
+  echo Signing the app...
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\sign.ps1 dist\ImageResizeShare\ImageResizeShare.exe || (pause & exit /b 1)
+)
+
 echo.
 echo ==========================================================
 echo  Done!  Your app is in:  dist\ImageResizeShare\

@@ -685,7 +685,11 @@ private fun ShareTab(vm: MainViewModel, actions: UiActions) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             modifier = Modifier.fillMaxWidth(),
         )
-        HintText("With a number (including the country code) WhatsApp opens that chat straight away.")
+        val waNumber = vm.whatsAppNumber()
+        if (waNumber.isNotEmpty()) {
+            Text("Opens the chat with +$waNumber", fontSize = 13.sp, color = GoodColor)
+        }
+        HintText("With a number WhatsApp opens that chat straight away. Local numbers like 07700 900123 get your country code added.")
         HintText(
             "WhatsApp compresses photos. For full quality, in WhatsApp tap 📎 → Document and pick the file from " +
                 "Pictures/${Outputs.FOLDER}/WhatsApp (saved automatically), or turn on HD before sending."

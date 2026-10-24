@@ -1,7 +1,7 @@
 ; Inno Setup script - creates ImageResizeShare-Setup.exe
 ; Build the app first (build.bat), then compile this file with Inno Setup 6.
 #define AppName "Image Resize & Share"
-#define AppVersion "1.0.0"
+#define AppVersion "3.1.1"
 #define AppExe "ImageResizeShare.exe"
 
 [Setup]
@@ -19,6 +19,12 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequiredOverridesAllowed=dialog
 WizardStyle=modern
+; Signing (optional): compile with  ISCC /DSign "/Ssigntool=powershell -ExecutionPolicy Bypass -File tools\sign.ps1 $f"  installer.iss
+; (the GitHub build does this when a certificate is set up - see README, 'Signing the installer')
+#ifdef Sign
+SignTool=signtool
+SignedUninstaller=yes
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"

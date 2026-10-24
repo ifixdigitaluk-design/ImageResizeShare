@@ -22,6 +22,7 @@ import uk.ifixdigital.imageresizeshare.core.FitMode
 import uk.ifixdigital.imageresizeshare.core.ImageEngine
 import uk.ifixdigital.imageresizeshare.core.OutFormat
 import uk.ifixdigital.imageresizeshare.core.OutputSettings
+import uk.ifixdigital.imageresizeshare.core.Outputs
 import uk.ifixdigital.imageresizeshare.core.Pix
 import uk.ifixdigital.imageresizeshare.core.Proof
 import uk.ifixdigital.imageresizeshare.core.ProofSettings
@@ -306,6 +307,17 @@ class EngineTest {
             assertEquals(mode.name, 90f, cy, 1f)
             assertTrue(kk > 1)
         }
+    }
+
+    @Test
+    fun whatsAppNumbers() {
+        // same cases as the Windows app (tests/test_safety.py)
+        assertEquals("447700900123", Outputs.cleanPhone("07700 900123", "44"))
+        assertEquals("447700900123", Outputs.cleanPhone("+44 (0)7700-900123", "92"))
+        assertEquals("447700900123", Outputs.cleanPhone("0044 7700 900123", ""))
+        assertEquals("923001234567", Outputs.cleanPhone("0300 1234567", "92"))
+        assertEquals("923001234567", Outputs.cleanPhone("+92 300 1234567", "44"))
+        assertEquals("", Outputs.cleanPhone("", "44"))
     }
 
     @Test

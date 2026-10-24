@@ -173,6 +173,17 @@ def closeup_box(src_size: Tuple[int, int], ps: ProofSettings) -> Tuple[int, int,
     return (x, y, x + side, y + side)
 
 
+def _pad_to(img: Image.Image, size, max_px: float = 60e6) -> Image.Image:
+    """ImageOps.pad, but an extreme print shape (e.g. 1 : 500) never makes a gigantic picture:
+    the design is made smaller first so the padded result stays within max_px."""
+    w, h = size
+    if w * h > max_px:
+        k = (max_px / (w * h)) ** 0.5
+        img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.Resampling.LANCZOS)
+        w, h = max(1, round(w * k)), max(1, round(h * k))
+    return ImageOps.pad(img, (max(w, 1), max(h, 1)), color=(255, 255, 255))
+
+
 def shape_design(img: Image.Image, ps: ProofSettings) -> Image.Image:
     """Full-resolution design trimmed (or padded) to the print shape."""
     img = img.convert("RGB")
@@ -183,17 +194,17 @@ def shape_design(img: Image.Image, ps: ProofSettings) -> Image.Image:
         return img
     if ps.fill:
         if img.width / img.height > r:
-            w = round(img.height * r)
+            w = max(1, round(img.height * r))
             x = (img.width - w) // 2
             return img.crop((x, 0, x + w, img.height))
-        h = round(img.width / r)
+        h = max(1, round(img.width / r))
         y = (img.height - h) // 2
         return img.crop((0, y, img.width, y + h))
     if img.width / img.height > r:
-        size = (img.width, round(img.width / r))
+        size = (img.width, max(1, round(img.width / r)))
     else:
-        size = (round(img.height * r), img.height)
-    return ImageOps.pad(img, size, color=WHITE)
+        size = (max(1, round(img.height * r)), img.height)
+    return _pad_to(img, size)
 
 
 def render_proof(img: Image.Image, ps: ProofSettings) -> Image.Image:
@@ -218,6 +229,10 @@ def render_proof(img: Image.Image, ps: ProofSettings) -> Image.Image:
     footer_h = int(40 * s) if ps.footer.strip() else 0
     design_w = W - 2 * (margin + frame)
     dw, dh = design_shape_px(design_w, ps)
+    x_in = 0
+    if dh > 4 * design_w:              # a very tall print: show it narrower so the page stays sensible
+        dw, dh = max(1, round(design_w * 4 * design_w / dh)), 4 * design_w
+        x_in = (design_w - dw) // 2
     H = header_h + margin + 2 * frame + dh + margin + footer_h
 
     canvas = Image.new("RGB", (W, H), BG)
@@ -256,7 +271,7 @@ def render_proof(img: Image.Image, ps: ProofSettings) -> Image.Image:
     shown = full.resize((dw, dh), Image.Resampling.LANCZOS, reducing_gap=3.0)
     if ps.watermark.strip():
         shown = _watermark(shown, ps.watermark.strip(), s)
-    ox, oy = margin + frame, fy + frame
+    ox, oy = margin + frame + x_in, fy + frame
     canvas.paste(shown, (ox, oy))
 
     # ---------- close-up inset ----------
@@ -301,23 +316,38 @@ def render_proof(img: Image.Image, ps: ProofSettings) -> Image.Image:
 
 
 def _watermark(img: Image.Image, text: str, s: float) -> Image.Image:
+    """Repeated diagonal text. One small rotated stamp is placed many times (a full-size rotated layer
+    as big as the picture's diagonal took seconds and GBs for a big or tall proof)."""
     base = img.convert("RGBA")
     f = get_font(int(34 * s))
     tmp = ImageDraw.Draw(base)
     tw = _text_w(tmp, text, f) + int(120 * s)
     th = _text_h(tmp, text, f) + int(110 * s)
-    diag = int(math.hypot(*base.size)) + tw
-    layer = Image.new("RGBA", (diag, diag), (0, 0, 0, 0))
-    ld = ImageDraw.Draw(layer)
-    for row, y in enumerate(range(0, diag, th)):
+    # the stamp: text + soft shadow, as before, then turned 30° like the old layer
+    sw, sh = _text_w(tmp, text, f) + 8, _text_h(tmp, text, f) + 12
+    stamp = Image.new("RGBA", (sw, sh), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(stamp)
+    sd.text((0, 0), text, font=f, fill=(255, 255, 255, 95))
+    sd.text((2, 2), text, font=f, fill=(0, 0, 0, 40))       # on top, as before: the embossed look
+    stamp = stamp.rotate(30, resample=Image.Resampling.BICUBIC, expand=True)
+    W, H = base.size
+    cx, cy = W / 2, H / 2
+    diag = math.hypot(W, H) + tw
+    c, si = math.cos(math.radians(30)), math.sin(math.radians(30))
+    half = diag / 2
+    rows = range(int(-half), int(half) + th, th)
+    for row, y in enumerate(rows):
         off = (row % 2) * tw // 2
-        for x in range(-tw, diag, tw):
-            ld.text((x + off, y), text, font=f, fill=(255, 255, 255, 95))
-            ld.text((x + off + 2, y + 2), text, font=f, fill=(0, 0, 0, 40))
-    layer = layer.rotate(30, resample=Image.Resampling.BICUBIC)
-    lx = (layer.width - base.width) // 2
-    ly = (layer.height - base.height) // 2
-    base.alpha_composite(layer.crop((lx, ly, lx + base.width, ly + base.height)))
+        for x in range(int(-half) - tw, int(half) + tw, tw):
+            # centre of this text in the unrotated grid, turned 30° anticlockwise about the picture centre
+            dx, dy = x + off + sw / 2, y + sh / 2
+            px = cx + dx * c + dy * si
+            py = cy - dx * si + dy * c
+            ox, oy = int(px - stamp.width / 2), int(py - stamp.height / 2)
+            if ox >= W or oy >= H or ox + stamp.width <= 0 or oy + stamp.height <= 0:
+                continue
+            base.alpha_composite(stamp, (max(0, ox), max(0, oy)),
+                                 (max(0, -ox), max(0, -oy)))
     return base.convert("RGB")
 
 

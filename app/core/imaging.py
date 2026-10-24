@@ -61,6 +61,7 @@ FORMATS = {
     "PNG": {"ext": ".png", "pil": "PNG", "lossy": False, "alpha": True},
     "WEBP": {"ext": ".webp", "pil": "WEBP", "lossy": True, "alpha": True},
     "PDF": {"ext": ".pdf", "pil": "PDF", "lossy": True, "alpha": False},
+    "TIFF": {"ext": ".tif", "pil": "TIFF", "lossy": False, "alpha": True},
 }
 
 UNITS = ("px", "%", "cm", "mm", "in")
@@ -112,10 +113,22 @@ class ProcessResult:
     fmt: str
     quality_used: Optional[int]
     notes: list = field(default_factory=list)
+    preview_scale: float = 1.0               # < 1: a screen-sized preview of a bigger output
+    full_size: Optional[Tuple[int, int]] = None   # the real output size (pixels)
+    est_bytes: Optional[int] = None          # estimated file size of the real output (previews)
 
     @property
     def size_bytes(self) -> int:
         return len(self.data)
+
+    @property
+    def is_preview(self) -> bool:
+        return self.preview_scale < 1.0
+
+    @property
+    def out_size(self) -> Tuple[int, int]:
+        """Size of the file this result stands for (the real output, also for a preview)."""
+        return self.full_size or self.image.size
 
 
 # --------------------------------------------------------------------------
@@ -161,26 +174,62 @@ def _normalise_mode(img: Image.Image) -> Image.Image:
 
 def load_image(path: str | Path) -> LoadedImage:
     path = Path(path)
-    with Image.open(path) as im:
+    # one copy of the picture, not up to four (a 250 MP file is 750 MB a copy)
+    im = Image.open(path)
+    try:
+        n_frames = getattr(im, "n_frames", 1)      # before load(): counting frames moves through the file
         im.load()
         fmt = im.format or path.suffix.upper().lstrip(".")
-        n_frames = getattr(im, "n_frames", 1)
-        icc = im.info.get("icc_profile")
-        dpi = im.info.get("dpi")
-        oriented = ImageOps.exif_transpose(im)  # fixes sideways phone photos
-        exif = None
-        try:
-            ex = oriented.getexif()
+    finally:
+        if getattr(im, "fp", None) is not None:      # loaded: let the file go (Windows locks open files)
+            im.fp.close()
+            im.fp = None
+    icc = im.info.get("icc_profile")
+    dpi = im.info.get("dpi")
+    ImageOps.exif_transpose(im, in_place=True)     # fixes sideways phone photos
+    exif = None
+    try:
+        raw = im.info.get("exif")              # the real EXIF block (not a TIFF's own layout tags)
+        if raw:
+            ex = Image.Exif()
+            ex.load(raw)
             if ex:
                 ex[0x0112] = 1  # orientation already applied
                 exif = ex.tobytes()
-        except Exception:
-            exif = None
-        img = _normalise_mode(oriented)
-        img = img.copy()
+    except Exception:
+        exif = None
+    img = _normalise_mode(im)
     return LoadedImage(image=img, path=path, file_size=path.stat().st_size,
                        original_format=fmt, icc_profile=icc, exif=exif,
                        dpi=dpi, n_frames=n_frames)
+
+
+def load_error_text(path, exc: BaseException) -> str:
+    """A plain-words reason why a picture could not be opened."""
+    from PIL import UnidentifiedImageError
+    name = Path(str(path)).name
+    if isinstance(exc, FileNotFoundError):
+        return f"{name} could not be found. It may have been moved or deleted."
+    if isinstance(exc, PermissionError):
+        return f"{name} could not be read. It may be open in another program, or still downloading."
+    if isinstance(exc, Image.DecompressionBombError):
+        return f"{name} is too big to open safely (over {Image.MAX_IMAGE_PIXELS // 1_000_000} megapixels)."
+    if isinstance(exc, MemoryError):
+        return f"{name} is too big for this computer's memory."
+    try:
+        empty = Path(str(path)).stat().st_size == 0
+    except OSError:
+        empty = False
+    if empty:
+        return f"{name} is empty (0 bytes). It may not have finished copying or downloading."
+    if isinstance(exc, UnidentifiedImageError):
+        ext = Path(str(path)).suffix.lower()
+        if ext in (".heic", ".heif") and not HEIF_OK:
+            return f"{name} is an iPhone HEIC photo and HEIC support is not installed."
+        return f"{name} is not a picture this app can read, or the file is damaged."
+    if isinstance(exc, (OSError, SyntaxError, ValueError)):
+        return f"{name} looks damaged or incomplete ({exc}). Try saving or downloading it again."
+    return f"{name} could not be opened ({exc})."
 
 
 def from_pil(img: Image.Image, name: str = "pasted") -> LoadedImage:
@@ -336,7 +385,7 @@ def _antihalo(base: Image.Image, sharp: Image.Image) -> Image.Image:
     return ImageChops.darker(ImageChops.lighter(sharp, lo), hi)
 
 
-def _unsharp(img: Image.Image, amount: int, scale: float) -> Image.Image:
+def _unsharp(img: Image.Image, amount: int, scale: float, inplace: bool = False) -> Image.Image:
     if amount <= 0:
         return img
     if scale < 1:
@@ -348,16 +397,55 @@ def _unsharp(img: Image.Image, amount: int, scale: float) -> Image.Image:
     def f(im: Image.Image) -> Image.Image:
         sharp = im.filter(ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=threshold))
         return _antihalo(im, sharp) if scale > 1 else sharp
-    return _apply_rgb(img, f)
+    return _apply_rgb(img, f, 16, inplace)
 
 
-def _apply_rgb(img: Image.Image, fn: Callable[[Image.Image], Image.Image]) -> Image.Image:
-    """Apply a filter to colour channels only (keep alpha untouched)."""
+STRIP_PIXELS = 6_000_000     # big images are filtered in strips of about this size (low memory)
+
+
+def _in_strips(img: Image.Image, fn: Callable[[Image.Image], Image.Image], overlap: int = 16,
+               inplace: bool = False) -> Image.Image:
+    """fn(img) for a local filter (reach < overlap pixels), done strip by strip so a 200 MP
+    print needs a few MB of working memory instead of several GB. The result is identical to
+    fn(img). With inplace=True the result is written back into img (saves one full copy;
+    only for images nobody else uses)."""
+    w, h = img.size
+    rows = max(64, STRIP_PIXELS // max(1, w))
+    if h <= rows + 2 * overlap:
+        return fn(img)
+    out = img if inplace else Image.new(img.mode, img.size)
+    keep = None                       # original rows just above the current strip (inplace)
+    y = 0
+    while y < h:
+        y1 = min(h, y + rows)
+        b = min(h, y1 + overlap)
+        if not inplace:
+            a = max(0, y - overlap)
+            part, top = img.crop((0, a, w, b)), y - a
+        else:
+            below = img.crop((0, y, w, b))
+            if keep is not None:
+                part = Image.new(img.mode, (w, keep.height + below.height))
+                part.paste(keep, (0, 0))
+                part.paste(below, (0, keep.height))
+                top = keep.height
+            else:
+                part, top = below, 0
+            keep = img.crop((0, max(0, y1 - overlap), w, y1))     # before it is overwritten
+        res = fn(part)
+        out.paste(res.crop((0, top, w, top + (y1 - y))), (0, y))
+        y = y1
+    return out
+
+
+def _apply_rgb(img: Image.Image, fn: Callable[[Image.Image], Image.Image], overlap: int = 16,
+               inplace: bool = False) -> Image.Image:
+    """Apply a local filter to colour channels only (keep alpha untouched)."""
     if img.mode == "RGBA":
-        rgb = fn(img.convert("RGB"))
+        rgb = _in_strips(img.convert("RGB"), fn, overlap, inplace=True)     # a fresh copy anyway
         rgb.putalpha(img.getchannel("A"))
         return rgb
-    return fn(img)
+    return _in_strips(img, fn, overlap, inplace)
 
 
 def _stepwise_upscale(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
@@ -386,7 +474,7 @@ def resample(img: Image.Image, size: Tuple[int, int], method: str = UPSCALE_ENHA
     if not enlarging:
         out = img.resize((tw, th), RESAMPLE, reducing_gap=3.0)
         amount = _auto_sharpen_amount(scale) if sharpen < 0 else sharpen
-        return _unsharp(out, amount, scale)
+        return _unsharp(out, amount, scale, inplace=True)
 
     # ---- Enlarging -------------------------------------------------------
     if method in (UPSCALE_AI_PHOTO, UPSCALE_AI_ART):
@@ -409,11 +497,11 @@ def resample(img: Image.Image, size: Tuple[int, int], method: str = UPSCALE_ENHA
 
     if method == UPSCALE_STANDARD:
         out = img.resize((tw, th), RESAMPLE)
-        return _unsharp(out, max(0, sharpen), scale) if sharpen > 0 else out
+        return _unsharp(out, max(0, sharpen), scale, inplace=True) if sharpen > 0 else out
 
     out = _stepwise_upscale(img, (tw, th))
     amount = _auto_sharpen_amount(scale) if sharpen < 0 else sharpen
-    return _unsharp(out, amount, scale)
+    return _unsharp(out, amount, scale, inplace=True)
 
 
 # --------------------------------------------------------------------------
@@ -459,22 +547,34 @@ def check_output_size(w: int, h: int) -> None:
                          f"{MAX_OUTPUT_PIXELS // 1_000_000} MP).")
 
 
-def resize_image(img: Image.Image, rs: ResizeSettings, ai_engine=None,
-                 notes: Optional[list] = None, progress=None) -> Image.Image:
+def resize_layout(size: Tuple[int, int], rs: ResizeSettings):
+    """(scaled, canvas, offset, crop_box, kept) for an edited picture of `size`: compute_layout plus
+    the 'enlarging off' rule. kept = True when enlarging was refused. Used by the resize, the fast
+    preview and the close-up, so all three always agree."""
     if not rs.enabled or rs.width <= 0 or rs.height <= 0:
-        return img
+        return size, size, (0, 0), None, False
     box = (int(rs.width), int(rs.height))
-    check_output_size(*box)
-    scaled, canvas, offset, crop_box = compute_layout(img.size, box, rs.mode)
-    if not rs.allow_upscale and (scaled[0] > img.width or scaled[1] > img.height):
-        r = min(img.width / scaled[0], img.height / scaled[1])
+    scaled, canvas, offset, crop_box = compute_layout(size, box, rs.mode)
+    kept = False
+    if not rs.allow_upscale and (scaled[0] > size[0] or scaled[1] > size[1]):
+        r = min(size[0] / scaled[0], size[1] / scaled[1])
         scaled = (max(1, round(scaled[0] * r)), max(1, round(scaled[1] * r)))
-        if notes is not None:
-            notes.append("Enlarging is off, so the image was kept at its original size.")
         if rs.mode in (MODE_FIT_INSIDE, MODE_STRETCH):
             canvas = scaled
         offset = ((canvas[0] - scaled[0]) // 2, (canvas[1] - scaled[1]) // 2)
         crop_box = None
+        kept = True
+    return scaled, canvas, offset, crop_box, kept
+
+
+def resize_image(img: Image.Image, rs: ResizeSettings, ai_engine=None,
+                 notes: Optional[list] = None, progress=None) -> Image.Image:
+    if not rs.enabled or rs.width <= 0 or rs.height <= 0:
+        return img
+    check_output_size(int(rs.width), int(rs.height))
+    scaled, canvas, offset, crop_box, kept = resize_layout(img.size, rs)
+    if kept and notes is not None:
+        notes.append("Enlarging is off, so the image was kept at its original size.")
 
     out = resample(img, scaled, rs.upscale, rs.sharpen, ai_engine, notes, progress)
     if crop_box:
@@ -524,10 +624,13 @@ def encode(img: Image.Image, os_: OutputSettings, quality: Optional[int] = None,
 
     if fmt == "JPG":
         im = _flatten(img, os_.jpg_background)
-        kw.update(quality=q, optimize=True, progressive=True,
+        big = im.width * im.height > 40_000_000
+        # optimize / progressive keep the whole picture in memory (about 6 bytes a pixel), which
+        # very large prints cannot afford; the file is only ~5 % bigger without them
+        kw.update(quality=q, optimize=not big, progressive=not big,
                   subsampling=0 if q >= 85 else 2)  # 4:4:4 for high quality
-        # optimize/progressive JPEG needs the whole stream in one buffer
-        ImageFile.MAXBLOCK = max(ImageFile.MAXBLOCK, im.width * im.height * 3 + (1 << 20))
+        if not big:   # optimize/progressive JPEG needs the whole stream in one buffer
+            ImageFile.MAXBLOCK = max(ImageFile.MAXBLOCK, im.width * im.height * 3 + (1 << 20))
         im.save(buf, "JPEG", **kw)
     elif fmt == "PNG":
         im = img if img.mode == "RGBA" and has_transparency(img) else _flatten(img)
@@ -547,6 +650,10 @@ def encode(img: Image.Image, os_: OutputSettings, quality: Optional[int] = None,
         kw.pop("exif", None)
         kw.update(resolution=float(os_.dpi), quality=q)
         im.save(buf, "PDF", **kw)
+    elif fmt == "TIFF":
+        im = img if img.mode == "RGBA" and has_transparency(img) else _flatten(img)
+        kw.update(compression="tiff_lzw")   # lossless, the usual choice for print shops
+        im.save(buf, "TIFF", **kw)
     else:
         raise ValueError(f"Unsupported format {fmt}")
     return buf.getvalue()
@@ -608,6 +715,143 @@ def process(src: LoadedImage, st: EditState, rs: ResizeSettings, os_: OutputSett
     return ProcessResult(image=final, data=data, fmt=os_.fmt.upper(), quality_used=q, notes=notes)
 
 
+PREVIEW_PIXELS = 8_000_000    # bigger outputs are previewed at about this size while editing
+
+
+def preview_scale_for(src: LoadedImage, st: EditState, rs: ResizeSettings, os_: OutputSettings,
+                      max_px: int = PREVIEW_PIXELS) -> float:
+    """1.0, or how much smaller the editing preview is than the real output."""
+    if os_.target_kb > 0:                    # the file size is the point: make it for real
+        return 1.0
+    _s, canvas, _o, _c, _k = resize_layout(edited_size(src.image.size, st), rs)
+    px = canvas[0] * canvas[1]
+    return 1.0 if px <= max_px else math.sqrt(max_px / px)
+
+
+def process_preview(src: LoadedImage, st: EditState, rs: ResizeSettings, os_: OutputSettings,
+                    ai_engine=None, progress=None, max_px: int = PREVIEW_PIXELS) -> ProcessResult:
+    """What the editor shows while you change settings. Small outputs are made for real; a big
+    print (up to 250 MP) is made at screen size, so each change takes a moment instead of many
+    seconds and a few GB. Download, share and print make the real thing with process().
+    The file size shown for a preview is an estimate."""
+    k = preview_scale_for(src, st, rs, os_, max_px)
+    if k >= 1.0:
+        return process(src, st, rs, os_, ai_engine, progress)
+    notes: list = []
+    img = apply_edits(src.image, st)
+    _s, canvas, _o, _c, kept = resize_layout(img.size, rs)
+    check_output_size(*canvas)
+    small = replace(rs, width=max(1, round(rs.width * k)), height=max(1, round(rs.height * k)))
+    if small.upscale in (UPSCALE_AI_PHOTO, UPSCALE_AI_ART):
+        small.upscale = UPSCALE_ENHANCED     # AI on the real output only (the close-up shows it)
+    if kept:
+        notes.append("Enlarging is off, so the image was kept at its original size.")
+    out = resize_image(img, small, None, None, progress)
+    if os_.fmt.upper() == "JPG" and has_transparency(out):
+        notes.append("JPG has no transparency; background filled with white.")
+    exif = None if os_.strip_metadata else src.exif
+    data, q, final = encode_to_target(out, os_, src.icc_profile, exif, None)
+    try:
+        est = _estimate_bytes(src, st, small_rs_full(rs), os_, canvas)
+    except Exception:                        # an estimate only: never let it stop the preview
+        est = int(len(data) / (final.width / canvas[0]) ** 2)
+    return ProcessResult(image=final, data=data, fmt=os_.fmt.upper(), quality_used=q, notes=notes,
+                         preview_scale=final.width / canvas[0], full_size=canvas, est_bytes=est)
+
+
+def small_rs_full(rs: ResizeSettings) -> ResizeSettings:
+    """Settings for sample tiles: the real size, but no AI (that runs on the real output only)."""
+    if rs.upscale in (UPSCALE_AI_PHOTO, UPSCALE_AI_ART):
+        return replace(rs, upscale=UPSCALE_ENHANCED)
+    return rs
+
+
+def _estimate_bytes(src: LoadedImage, st: EditState, rs: ResizeSettings, os_: OutputSettings,
+                    canvas: Tuple[int, int], grid: int = 6, tile: int = 160) -> int:
+    """File size of the real output, from a grid of real-size sample tiles encoded together
+    (a big enlargement compresses much better than its small preview would suggest)."""
+    W, H = canvas
+    t = min(tile, W // grid, H // grid)
+    if t < 16:
+        raise ValueError("too small to sample")
+    mosaic = None
+    for gy in range(grid):
+        for gx in range(grid):
+            x0 = int((gx + 0.5) * W / grid - t / 2)
+            y0 = int((gy + 0.5) * H / grid - t / 2)
+            piece = render_region(src, st, rs, (x0, y0, x0 + t, y0 + t))
+            if mosaic is None:
+                mosaic = Image.new(piece.mode, (t * grid, t * grid))
+            if piece.mode != mosaic.mode:
+                piece = piece.convert(mosaic.mode)
+            mosaic.paste(piece, (gx * t, gy * t))
+    data = encode(mosaic, os_, None, None, None)
+    per_px = len(data) / float(mosaic.width * mosaic.height)
+    return int(per_px * W * H)
+
+
+def estimated_bytes(res: ProcessResult) -> int:
+    """File size of the real output (exact, or estimated from a preview)."""
+    if not res.is_preview:
+        return res.size_bytes
+    if res.est_bytes:
+        return res.est_bytes
+    return int(res.size_bytes / (res.preview_scale ** 2))
+
+
+def render_region(src: LoadedImage, st: EditState, rs: ResizeSettings, region: Tuple[int, int, int, int],
+                  ai_engine=None) -> Image.Image:
+    """The real output's pixels in `region` (x0, y0, x1, y1 in output pixels), made without making
+    the whole output: for the close-up of a big print while editing."""
+    x0, y0, x1, y1 = (int(v) for v in region)
+    tw, th = max(1, x1 - x0), max(1, y1 - y0)
+    if tw * th > 6_000_000:
+        raise ValueError("close-up area too big")
+    ori = apply_orientation(src.image, st)
+    c = clamp_crop(st.crop, ori.size)
+    cx, cy = (c[0], c[1]) if c else (0, 0)
+    bw, bh = (c[2], c[3]) if c else ori.size
+    scaled, canvas, offset, crop_box, _kept = resize_layout((bw, bh), rs)
+    sx, sy = scaled[0] / bw, scaled[1] / bh
+    # background: made small and enlarged (it is plain, or blurred anyway)
+    kb = min(1.0, math.sqrt(2_000_000 / max(1, canvas[0] * canvas[1])))
+    small_canvas = (max(1, round(canvas[0] * kb)), max(1, round(canvas[1] * kb)))
+    base = ori.crop((cx, cy, cx + bw, cy + bh)) if c else ori
+    if rs.background == BG_BLUR:
+        bg_small = _background(base.resize(small_canvas, Image.Resampling.BILINEAR), small_canvas, rs)
+        bx, by = bg_small.width / canvas[0], bg_small.height / canvas[1]
+        out = bg_small.resize((tw, th), Image.Resampling.BILINEAR,
+                              box=(x0 * bx, y0 * by, min(bg_small.width, x1 * bx), min(bg_small.height, y1 * by)))
+    else:
+        out = _background(base, (tw, th), rs) if crop_box is None else Image.new(
+            "RGBA" if base.mode == "RGBA" else "RGB", (tw, th))
+    # where the region falls on the resized picture
+    if crop_box:
+        ix0, iy0 = x0 + crop_box[0], y0 + crop_box[1]
+    else:
+        ix0, iy0 = x0 - offset[0], y0 - offset[1]
+    ix1, iy1 = ix0 + tw, iy0 + th
+    vx0, vy0, vx1, vy1 = max(0, ix0), max(0, iy0), min(scaled[0], ix1), min(scaled[1], iy1)
+    if vx1 > vx0 and vy1 > vy0:
+        pad = 6                                            # source pixels of context for the filters
+        u0, v0 = vx0 / sx, vy0 / sy
+        u1, v1 = vx1 / sx, vy1 / sy
+        pu0, pv0 = max(0, int(math.floor(u0)) - pad), max(0, int(math.floor(v0)) - pad)
+        pu1, pv1 = min(bw, int(math.ceil(u1)) + pad), min(bh, int(math.ceil(v1)) + pad)
+        piece = base.crop((pu0, pv0, pu1, pv1))
+        big_w, big_h = max(1, round((pu1 - pu0) * sx)), max(1, round((pv1 - pv0) * sy))
+        big = resample(piece, (big_w, big_h), rs.upscale, rs.sharpen, ai_engine, None)
+        ox, oy = round(vx0 - pu0 * sx), round(vy0 - pv0 * sy)
+        part = big.crop((ox, oy, ox + (vx1 - vx0), oy + (vy1 - vy0)))
+        at = (vx0 - ix0, vy0 - iy0)
+        if part.mode == "RGBA" or out.mode == "RGBA":
+            out = out.convert("RGBA")
+            out.alpha_composite(part.convert("RGBA"), at)
+        else:
+            out.paste(part, at)
+    return out
+
+
 def unique_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -640,10 +884,7 @@ def _layout_for(src: LoadedImage, st: EditState, rs: ResizeSettings, result_size
     c = clamp_crop(st.crop, osz)
     cx, cy = (c[0], c[1]) if c else (0, 0)
     bw, bh = (c[2], c[3]) if c else osz
-    if rs.enabled and rs.width > 0 and rs.height > 0:
-        scaled, canvas, offset, crop_box = compute_layout((bw, bh), (rs.width, rs.height), rs.mode)
-    else:
-        scaled, canvas, offset, crop_box = (bw, bh), (bw, bh), (0, 0), None
+    scaled, canvas, offset, crop_box, _kept = resize_layout((bw, bh), rs)
     f = result_size[0] / max(1, canvas[0])
     return (cx, cy), (bw, bh), scaled, offset, crop_box, f
 

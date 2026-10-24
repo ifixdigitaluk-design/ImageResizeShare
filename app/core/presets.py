@@ -31,12 +31,21 @@ SIZE_PRESETS = {
         ("A4 210 × 297 mm", 210, 297, "mm", 300),
         ("A3 297 × 420 mm", 297, 420, "mm", 300),
     ],
+    "Wallpaper & murals (100 DPI)": [
+        ("Feature wall 8 × 8 ft", 96, 96, "in", 100),
+        ("Wall 10 × 8 ft", 120, 96, "in", 100),
+        ("Wall 12 × 8 ft", 144, 96, "in", 100),
+        ("Wall 12 × 9 ft", 144, 108, "in", 100),
+        ("Wall 14 × 9 ft", 168, 108, "in", 100),
+        ("Large wall 16 × 9 ft (72 DPI)", 192, 108, "in", 72),
+        ("Canvas 24 × 36 in (150 DPI)", 24, 36, "in", 150),
+        ("Poster 36 × 48 in (150 DPI)", 36, 48, "in", 150),
+    ],
 }
 
-# Quick buttons shown on the Resize tab (like the reference design)
+# Quick tiles on the Resize panel (as in the design mockup); "Custom" is added by the UI
 QUICK_PRESETS = [
-    ("Original", 0, 0), ("800 × 600", 800, 600), ("1024 × 768", 1024, 768),
-    ("1080 × 1080", 1080, 1080), ("1280 × 1024", 1280, 1024), ("1920 × 1080", 1920, 1080),
+    ("Original", 0, 0), ("Small", 800, 600), ("Medium", 1200, 900), ("Large", 1920, 1080),
 ]
 
 # (label, ratio_w, ratio_h) ; 0,0 = free ; -1,-1 = original image ratio

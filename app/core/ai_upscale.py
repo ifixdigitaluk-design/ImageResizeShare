@@ -12,6 +12,7 @@ has no usable GPU, the app falls back to "Enhanced" upscaling.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import subprocess
 import sys
@@ -47,6 +48,8 @@ class RealEsrgan:
         self._lock = threading.Lock()
         self._cache_key: Optional[tuple] = None
         self._cache_img: Optional[Image.Image] = None
+        self._cache2_key: Optional[tuple] = None
+        self._cache2_img: Optional[Image.Image] = None
         for d in _candidate_dirs():
             for name in EXE_NAMES:
                 p = d / name
@@ -84,7 +87,8 @@ class RealEsrgan:
                    "-s", "4", "-f", "png"]
             flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
             proc = subprocess.run(cmd, cwd=str(self.exe.parent), capture_output=True,
-                                  text=True, timeout=900, creationflags=flags)
+                                  text=True, encoding="utf-8", errors="replace",   # any Windows code page
+                                  timeout=900, creationflags=flags)
             if proc.returncode != 0 or not dst.exists():
                 msg = (proc.stderr or proc.stdout or "").strip().splitlines()
                 last = msg[-1] if msg else f"exit code {proc.returncode}"
@@ -99,21 +103,33 @@ class RealEsrgan:
         return result
 
     def upscale_to(self, img: Image.Image, size: Tuple[int, int], art: bool = False) -> Image.Image:
-        """Return an AI-enlarged image at least as large as `size` (or 16x max)."""
-        # Cache by source content, so changing only the target size re-uses
-        # the slow AI result and just re-samples it.
+        """Return an AI-enlarged image close to `size` (up to 16x).
+
+        One Real-ESRGAN pass gives 4x. For bigger enlargements (8x, 16x) the
+        4x result is resized so that a second 4x pass lands right on the
+        target, instead of making a giant 16x image and shrinking it.
+        Results are cached, so changing only the target size is fast.
+        """
         key = (hashlib.md5(img.tobytes()).hexdigest(), img.size, img.mode, art)
         with self._lock:
             if self._cache_key == key and self._cache_img is not None:
                 cur = self._cache_img
             else:
                 cur = self._run_x4(img, art)
+                self._cache_key, self._cache_img = key, cur
+                self._cache2_key, self._cache2_img = None, None
             need = max(size[0] / cur.width, size[1] / cur.height)
-            if need > 1.0 and cur.width <= img.width * 4:
-                # Second AI pass for very large enlargements (> 4x).
-                cur = self._run_x4(cur, art)
-            self._cache_key, self._cache_img = key, cur
-            return cur
+            if need <= 1.0:
+                return cur
+            k2 = (key, tuple(size))
+            if getattr(self, "_cache2_key", None) == k2 and self._cache2_img is not None:
+                return self._cache2_img
+            mid = (min(cur.width, max(1, math.ceil(size[0] / 4))),
+                   min(cur.height, max(1, math.ceil(size[1] / 4))))
+            inter = cur if mid == cur.size else cur.resize(mid, Image.Resampling.LANCZOS)
+            out = self._run_x4(inter, art)
+            self._cache2_key, self._cache2_img = k2, out
+            return out
 
 
 _engine: Optional[RealEsrgan] = None

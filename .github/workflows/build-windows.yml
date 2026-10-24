@@ -42,6 +42,10 @@ jobs:
           Remove-Item vendor/realesrgan.zip
           Get-ChildItem vendor/realesrgan -Include *.jpg,*.png,*.mp4 -Recurse | Remove-Item
 
+      - name: Stamp the build number (shown in Help › About; used by "Check for updates")
+        shell: pwsh
+        run: '"BUILD = ${{ github.run_number }}" | Out-File -FilePath app/_build.py -Encoding ascii'
+
       - name: Unit tests
         run: python -m pytest -q tests
 
@@ -58,8 +62,53 @@ jobs:
             exit $code
           }
 
+      # The click-everything robot (tools/robot.py): one fixed click order must pass, and a new one
+      # each build looks for fresh problems (reported as a warning, so a release isn't held up).
+      - name: Robot (fixed click order)
+        timeout-minutes: 25
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -X faulthandler tools/robot.py --seed 1 --out robot-logs
+
+      - name: Robot (new click order every build)
+        timeout-minutes: 25
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -X faulthandler tools/robot.py --seed ${{ github.run_number }} --out robot-logs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: robot-logs
+          path: robot-logs/
+          if-no-files-found: ignore
+
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm ImageResizeShare.spec
+
+      # Optional: set the repository secrets WINDOWS_CERT_PFX_BASE64 (the .pfx file, base64) and
+      # WINDOWS_CERT_PASSWORD to sign the app, installer and uninstaller (see README).
+      - name: Code-signing certificate
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:CERT_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
+            "IRS_SIGN_PFX=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "IRS_SIGN_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            Write-Output "::warning::No WINDOWS_CERT_PFX_BASE64 secret - the app is not signed (Windows will say 'Unknown publisher')."
+          }
+
+      - name: Sign the app
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/sign.ps1 dist/ImageResizeShare/ImageResizeShare.exe
 
       - name: Self-test the built exe
         timeout-minutes: 10
@@ -72,7 +121,13 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if ($env:IRS_SIGN_PFX) {
+            & $iscc /DSign "/Ssigntool=powershell -ExecutionPolicy Bypass -File $PWD\tools\sign.ps1 `$f" installer.iss
+          } else {
+            & $iscc installer.iss
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -92,8 +147,12 @@ jobs:
         run: |
           $setup = Get-ChildItem dist/ImageResizeShare-Setup-*.exe | Select-Object -First 1
           Compress-Archive -Path dist/ImageResizeShare -DestinationPath dist/ImageResizeShare-portable.zip -Force
-          $tag = "windows-v1.0.${{ github.run_number }}"
-          gh release create $tag $setup.FullName dist/ImageResizeShare-portable.zip `
+          $ver = (python -c "import app; print(app.__version__)").Trim()
+          $tag = "windows-v$ver.${{ github.run_number }}"      # read by Help › Check for updates
+          # latest.json: for "Check for updates" when the repository is private (see app/__init__.py)
+          @{ version = $ver; build = ${{ github.run_number }}; url = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag";
+             notes = "Windows app $ver (build ${{ github.run_number }})" } | ConvertTo-Json | Out-File dist/latest.json -Encoding utf8
+          gh release create $tag $setup.FullName dist/ImageResizeShare-portable.zip dist/latest.json `
             --target $env:GITHUB_SHA `
-            --title "Windows app 1.0.${{ github.run_number }}" `
+            --title "Windows app $ver (build ${{ github.run_number }})" `
             --notes "Image Resize & Share for Windows. ImageResizeShare-Setup-*.exe installs the app with Start-menu and desktop shortcuts and the right-click 'Edit with' menu. ImageResizeShare-portable.zip runs without installing: unzip and open ImageResizeShare.exe."

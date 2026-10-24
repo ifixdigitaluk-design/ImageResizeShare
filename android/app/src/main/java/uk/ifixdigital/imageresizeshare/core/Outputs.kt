@@ -10,9 +10,11 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.telephony.TelephonyManager
 import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 
 /** Saving to the gallery, sharing, WhatsApp and clipboard helpers. */
 object Outputs {
@@ -123,14 +125,51 @@ object Outputs {
     fun whatsAppPackage(context: Context): String? =
         listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { installed(context.packageManager, it) }
 
-    fun cleanPhone(phone: String): String = phone.filter { it.isDigit() }
+    /** Country calling codes, used when a number is typed the local way ("07700 …"). */
+    private val COUNTRY_CODES = mapOf(
+        "GB" to "44", "PK" to "92", "IN" to "91", "AE" to "971", "SA" to "966", "QA" to "974",
+        "KW" to "965", "OM" to "968", "BH" to "973", "BD" to "880", "IE" to "353", "US" to "1",
+        "CA" to "1", "AU" to "61", "NZ" to "64", "ZA" to "27", "NG" to "234", "KE" to "254",
+        "DE" to "49", "FR" to "33", "ES" to "34", "IT" to "39", "NL" to "31", "TR" to "90",
+        "MY" to "60", "SG" to "65", "EG" to "20", "LK" to "94", "NP" to "977",
+    )
 
-    /** Share straight into WhatsApp, optionally to one phone number (with country code). */
+    /** The phone's country code: from the SIM, else the mobile network, else the language region. */
+    fun countryCode(context: Context): String {
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val candidates = listOf(
+            try { tm?.simCountryIso } catch (_: Exception) { null },
+            try { tm?.networkCountryIso } catch (_: Exception) { null },
+            Locale.getDefault().country,
+        )
+        return candidates.filterNotNull().map { it.uppercase(Locale.ROOT) }
+            .firstNotNullOfOrNull { COUNTRY_CODES[it] } ?: ""
+    }
+
+    /**
+     * Digits WhatsApp understands: international format without + or 00.
+     * "07700 900123" typed the local way becomes "447700900123" in the UK;
+     * "+92 300 1234567" and "0092 300 …" become "923001234567". (Same rules as the Windows app.)
+     */
+    fun cleanPhone(phone: String, countryCode: String): String {
+        val raw = phone.trim().replace("(0)", "")      // "+44 (0)7700 …" is written but not dialled
+        val digits = raw.filter { it.isDigit() }
+        if (digits.isEmpty()) return ""
+        if (raw.startsWith("+")) return digits
+        if (digits.startsWith("00")) return digits.substring(2)
+        if (digits.startsWith("0")) {
+            val cc = countryCode.filter { it.isDigit() }
+            if (cc.isNotEmpty()) return cc + digits.substring(1)
+        }
+        return digits
+    }
+
+    /** Share straight into WhatsApp, optionally to one phone number. */
     fun whatsAppIntent(context: Context, uris: List<Uri>, mime: String, phone: String): Intent? {
         val pkg = whatsAppPackage(context) ?: return null
         val i = shareIntent(uris, mime)
         i.setPackage(pkg)
-        val digits = cleanPhone(phone)
+        val digits = cleanPhone(phone, countryCode(context))
         if (digits.length >= 7) i.putExtra("jid", "$digits@s.whatsapp.net")
         return i
     }

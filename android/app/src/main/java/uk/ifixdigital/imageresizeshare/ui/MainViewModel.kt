@@ -858,6 +858,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The number WhatsApp will open, in international format ("" when none / too short). */
+    fun whatsAppNumber(): String {
+        val n = Outputs.cleanPhone(waPhone, Outputs.countryCode(ctx))
+        return if (n.length >= 7) n else ""
+    }
+
     /** Save a copy to Pictures/…/WhatsApp (for sending as a Document) and open WhatsApp with the image. */
     fun shareWhatsApp(canWriteStorage: Boolean) {
         viewModelScope.launch {
