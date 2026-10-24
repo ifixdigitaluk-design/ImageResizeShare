@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="uk.ifixdigital.imageresizeshare.UiFlowTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-10-24T04:57:11.892Z" hostname="runnervm8k3b6" time="40.847">
+  <properties/>
+  <testcase name="walkThrough" classname="uk.ifixdigital.imageresizeshare.UiFlowTest" time="40.847"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
