@@ -84,6 +84,27 @@ class RiskJob(QRunnable):
             self.signals.done.emit(self.gen, None, [])
 
 
+class _RoomThumbButton(QPushButton):
+    """The room-preview button. Its size must not follow its icon: the room picture is fitted
+    to the button, so a button that also grew/shrank with the picture made the two resize each
+    other endlessly (a stack overflow on Windows with an extreme wall shape)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._hint: Optional[QSize] = None
+
+    def freeze_size_hint(self) -> None:
+        self._hint = super().sizeHint()
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._hint) if self._hint is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        if self._hint is None:
+            return super().minimumSizeHint()
+        return QSize(min(60, self._hint.width()), min(120, self._hint.height()))
+
+
 def _spin(lo, hi, dec=2, suffix="", step=0.1):
     s = QDoubleSpinBox()
     s.setRange(lo, hi)
@@ -636,10 +657,12 @@ class WallStudioPage(QWidget):
         self.cb_scene.addItem("Customer's wall photo", "photo")
         self.cb_scene.currentIndexChanged.connect(lambda _i: self.t_room.start())
         c.lay.addWidget(self.cb_scene)
-        self.room_thumb = QPushButton()
+        self.room_thumb = _RoomThumbButton()
         self.room_thumb.setObjectName("Flat")
         self.room_thumb.setStyleSheet("min-height: 120px;")     # QSS min-height wins
         self.room_thumb.setIconSize(QSize(268, 150))
+        self.room_thumb.freeze_size_hint()                     # layout size as before, fixed from now on
+        self._fitting_room = False
         self.room_thumb.installEventFilter(self)
         self._room_px = None
         self.room_thumb.setToolTip("Open the room preview")
@@ -1484,11 +1507,18 @@ class WallStudioPage(QWidget):
         if not self._room_px:
             return
         iw, ih = self._room_px
-        if iw <= 0 or ih <= 0:
+        if iw <= 0 or ih <= 0 or self._fitting_room:
             return
         bw, bh = max(40, self.room_thumb.width() - 12), max(40, self.room_thumb.height() - 10)
         k = min(bw / iw, bh / ih)
-        self.room_thumb.setIconSize(QSize(max(1, int(iw * k)), max(1, int(ih * k))))
+        size = QSize(max(1, int(iw * k)), max(1, int(ih * k)))
+        if size == self.room_thumb.iconSize():
+            return
+        self._fitting_room = True                              # setIconSize can resize the button
+        try:
+            self.room_thumb.setIconSize(size)
+        finally:
+            self._fitting_room = False
 
     def eventFilter(self, obj, ev) -> bool:
         if obj is getattr(self, "room_thumb", None) and ev.type() == QEvent.Type.Resize:
