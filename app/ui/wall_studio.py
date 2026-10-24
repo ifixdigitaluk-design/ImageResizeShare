@@ -1475,7 +1475,8 @@ class WallStudioPage(QWidget):
         pm = QPixmap.fromImage(pil_to_qimage(img))
         pm.setDevicePixelRatio(2)
         self.room_thumb.setIcon(pm)
-        self._room_px = (img.width // 2, img.height // 2)
+        # a very thin room picture can shrink to 1 px: never let a side become 0
+        self._room_px = (max(1, img.width // 2), max(1, img.height // 2))
         self._fit_room_icon()
 
     def _fit_room_icon(self) -> None:
@@ -1483,6 +1484,8 @@ class WallStudioPage(QWidget):
         if not self._room_px:
             return
         iw, ih = self._room_px
+        if iw <= 0 or ih <= 0:
+            return
         bw, bh = max(40, self.room_thumb.width() - 12), max(40, self.room_thumb.height() - 10)
         k = min(bw / iw, bh / ih)
         self.room_thumb.setIconSize(QSize(max(1, int(iw * k)), max(1, int(ih * k))))
