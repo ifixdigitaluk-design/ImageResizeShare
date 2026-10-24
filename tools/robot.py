@@ -126,7 +126,8 @@ def pick_save(suffix: str = ".jpg") -> str:
     out.mkdir(exist_ok=True)
     if r < 0.2:                                     # read-only file
         p = out / f"locked{suffix}"
-        p.write_bytes(b"x")
+        if not p.exists():                          # already made read-only on an earlier pick
+            p.write_bytes(b"x")
         p.chmod(0o444)
         return str(p)
     if r < 0.25:                                    # folder that doesn't exist
