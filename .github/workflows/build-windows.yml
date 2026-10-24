@@ -47,7 +47,20 @@ jobs:
         run: '"BUILD = ${{ github.run_number }}" | Out-File -FilePath app/_build.py -Encoding ascii'
 
       - name: Unit tests
-        run: python -m pytest -q tests
+        shell: pwsh
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          python -m pytest -q -rfE --tb=short tests *> pytest.log
+          $code = $LASTEXITCODE
+          Get-Content pytest.log
+          if ($code -ne 0) {
+            # failures as annotations (readable without the full log)
+            $lines = Get-Content pytest.log
+            $start = [Math]::Max(0, $lines.Count - 120)
+            $msg = ($lines[$start..($lines.Count - 1)] -join "`n") -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+            Write-Output "::error title=Unit tests failed (exit code $code)::$msg"
+            exit $code
+          }
 
       - name: App self-test (from source)
         shell: pwsh
